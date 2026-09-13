@@ -817,21 +817,7 @@ function resolveRuntimeContextFocusTransition(options) {
     return "none";
 }
 
-const API_BASE = "/api/runtime-console/";
-const REFRESH_MS = 30000;
-const WINDOW_REFRESH_MS = 3000;
-const COLLABORATION_WAIT_SECS = 25;
-const PROJECT_SEARCH_DEBOUNCE_MS = 200;
-const RUNTIME_CREDENTIAL_SESSION_KEY = "webcodex.runtime.credential.v1";
-const APPEARANCE_STORAGE_KEY = "webcodex.runtime.appearance.v1";
 const LANGUAGE_STORAGE_KEY = "webcodex.runtime.language.v1";
-const WORKSPACE_VIEW_STORAGE_KEY = "webcodex.runtime.workspace-view.v1";
-const DRAFT_STORAGE_PREFIX = "webcodex.runtime.draft.v1.";
-const DEVICE_DISCLOSURE_STORAGE_PREFIX = "webcodex.runtime.runner-open.v1.";
-const APPEARANCE_MEDIA_QUERY = "(prefers-color-scheme: light)";
-const MOBILE_NAVIGATION_MEDIA = "(max-width: 900px)";
-const WIDE_CONTEXT_MEDIA = "(min-width: 1280px)";
-let contextUserIntent = null;
 const RUNTIME_ZH_TEXT = {
     "Your workspace": "你的工作空间",
     "Pick up where work happens": "从这里继续工作",
@@ -1203,6 +1189,1423 @@ const ZH_COUNT_LABELS = {
     "unavailable": "台不可用",
     "RUNNING": "个运行中",
 };
+function languagePreference(value) {
+    return value === "zh-CN" ? "zh-CN" : "en";
+}
+function loadLanguagePreference() {
+    try {
+        const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+        if (stored === "en" || stored === "zh-CN")
+            return stored;
+    }
+    catch { /* Fall through to the browser language. */ }
+    return navigator.language && navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
+}
+function translate(source, language = "en") {
+    return language === "zh-CN" ? (RUNTIME_ZH_TEXT[source] || source) : source;
+}
+function translateStaticNodeValue(source, language = "en") {
+    const match = /^(\s*)([\s\S]*?)(\s*)$/.exec(source);
+    if (!match)
+        return source;
+    return match[1] + translate(match[2], language) + match[3];
+}
+function localizedCountLabel(value, singular, plural = singular + "s", language = "en") {
+    const count = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    if (language === "zh-CN")
+        return count + " " + (ZH_COUNT_LABELS[singular] || RUNTIME_ZH_TEXT[singular] || singular);
+    return count + " " + (count === 1 ? singular : plural);
+}
+function localizedWorkflowText(value, language = "en") {
+    const source = String(value || "");
+    if (language !== "zh-CN" || !source)
+        return source;
+    const exact = {
+        "Latest retained validation passed": "最近保留的验证已通过",
+        "Latest validation passed": "最近验证已通过",
+        "Latest retained validation failed": "最近保留的验证失败",
+        "Latest validation failed": "最近验证失败",
+        "Validation not run": "尚未运行验证",
+        "Retained terminal validation evidence unavailable": "保留的最终验证证据不可用",
+        "Terminal validation evidence unavailable": "最终验证证据不可用",
+        "No work observations in retained events.": "保留事件中没有工作观察记录。",
+        "No tool activity observed.": "尚未观察到工具活动。",
+        "No retained open guidance, questions, risks, or todos.": "没有保留的开放指导、问题、风险或待办。",
+        "No retained model-reported progress.": "没有保留的模型报告进度。",
+    };
+    let text = exact[source] || source;
+    const prefixes = [
+        ["Recent observed work: ", "最近观察到的工作："],
+        ["Observed work: ", "已观察工作："],
+        ["Retained open messages: ", "保留的开放消息："],
+        ["Retained: ", "保留："],
+        ["Recent ", "最近 "],
+        ["latest ", "最近 "],
+    ];
+    for (const [english, chinese] of prefixes) {
+        if (text.startsWith(english)) {
+            text = chinese + text.slice(english.length);
+            break;
+        }
+    }
+    const nounMap = {
+        edit: "次编辑", edits: "次编辑", validation: "次验证", validations: "次验证",
+        exploration: "次探索", review: "次审查", reviews: "次审查", run: "次运行", runs: "次运行",
+        risk: "个风险", risks: "个风险", todo: "个待办", todos: "个待办",
+        question: "个问题", questions: "个问题", guidance: "条指导",
+        test: "次测试", tests: "次测试", "unresolved failure": "个未解决失败",
+        "unresolved failures": "个未解决失败", "unresolved validation failure": "个未解决的验证失败",
+        "unresolved validation failures": "个未解决的验证失败",
+    };
+    return text.replace(/(\d+) (unresolved validation failures?|unresolved failures?|edits?|validations?|exploration|reviews?|runs?|risks?|todos?|questions?|guidance|tests?)/g, (_match, count, noun) => {
+        return String(count) + " " + (nounMap[String(noun)] || noun);
+    });
+}
+
+function resolveTr(source, ctx) {
+    if (ctx?.tr)
+        return ctx.tr(source);
+    if (typeof tr === "function")
+        return tr(source);
+    return source;
+}
+function resolveIcon(name, ctx) {
+    if (ctx?.runtimeIcon)
+        return ctx.runtimeIcon(name);
+    if (typeof runtimeIcon === "function")
+        return runtimeIcon(name);
+    return document.createElementNS("http://www.w3.org/2000/svg", "svg");
+}
+function resolveSetText(id, value, ctx) {
+    if (ctx?.setText) {
+        ctx.setText(id, value);
+        return;
+    }
+    if (typeof setText === "function") {
+        setText(id, value);
+        return;
+    }
+    const node = document.getElementById(id);
+    if (node)
+        node.textContent = value == null ? "—" : String(value);
+}
+function appendLinkifiedText(parent, text) {
+    const pattern = /https?:\/\/[^\s<>{}\[\]]+/g;
+    let cursor = 0;
+    for (const match of text.matchAll(pattern)) {
+        const index = match.index || 0;
+        if (index > cursor)
+            parent.appendChild(document.createTextNode(text.slice(cursor, index)));
+        let href = match[0];
+        let trailing = "";
+        while (/[.,;:!?)]$/.test(href)) {
+            trailing = href.slice(-1) + trailing;
+            href = href.slice(0, -1);
+        }
+        const link = document.createElement("a");
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = href;
+        parent.appendChild(link);
+        if (trailing)
+            parent.appendChild(document.createTextNode(trailing));
+        cursor = index + match[0].length;
+    }
+    if (cursor < text.length)
+        parent.appendChild(document.createTextNode(text.slice(cursor)));
+}
+function messageLineStartsBlock(line) {
+    return /^```/.test(line)
+        || /^#{1,3}\s+/.test(line)
+        || /^>\s?/.test(line)
+        || /^\s*[-*+]\s+/.test(line)
+        || /^\s*\d+[.)]\s+/.test(line);
+}
+function appendMessageParagraph(parent, lines) {
+    if (!lines.length)
+        return;
+    const paragraph = document.createElement("p");
+    paragraph.className = "message-paragraph";
+    lines.forEach((line, index) => {
+        if (index)
+            paragraph.appendChild(document.createElement("br"));
+        appendLinkifiedText(paragraph, line);
+    });
+    parent.appendChild(paragraph);
+}
+function appendMessageCode(parent, language, codeText, ctx) {
+    const block = document.createElement("section");
+    block.className = "message-code";
+    const header = document.createElement("header");
+    const label = document.createElement("span");
+    label.textContent = language || "code";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "message-code-copy";
+    copy.appendChild(resolveIcon("copy", ctx));
+    const copyLabel = document.createElement("span");
+    copyLabel.textContent = resolveTr("Copy code", ctx);
+    copy.appendChild(copyLabel);
+    copy.title = resolveTr("Copy code", ctx);
+    copy.setAttribute("aria-label", resolveTr("Copy code", ctx));
+    copy.addEventListener("click", async () => {
+        try {
+            await navigator.clipboard.writeText(codeText);
+            copyLabel.textContent = resolveTr("Code copied", ctx);
+            resolveSetText("runtime-message-announcer", resolveTr("Code copied", ctx), ctx);
+            window.setTimeout(() => { copyLabel.textContent = resolveTr("Copy code", ctx); }, 1400);
+        }
+        catch {
+            copyLabel.textContent = resolveTr("Unable to copy code", ctx);
+            resolveSetText("runtime-message-announcer", resolveTr("Unable to copy code", ctx), ctx);
+            window.setTimeout(() => { copyLabel.textContent = resolveTr("Copy code", ctx); }, 1800);
+        }
+    });
+    header.appendChild(label);
+    header.appendChild(copy);
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    if (language)
+        code.dataset.language = language;
+    code.textContent = codeText;
+    pre.appendChild(code);
+    block.appendChild(header);
+    block.appendChild(pre);
+    parent.appendChild(block);
+}
+function appendRichMessage(bubble, sourceValue, ctx) {
+    const source = String(sourceValue || "").replace(/\r\n?/g, "\n");
+    const lines = source.split("\n");
+    const body = document.createElement("div");
+    body.className = "message-body";
+    let index = 0;
+    while (index < lines.length) {
+        const line = lines[index];
+        if (!line.trim()) {
+            index += 1;
+            continue;
+        }
+        const fence = /^```\s*([^\s`]*)/.exec(line);
+        if (fence) {
+            const codeLines = [];
+            index += 1;
+            while (index < lines.length && !/^```\s*$/.test(lines[index])) {
+                codeLines.push(lines[index]);
+                index += 1;
+            }
+            if (index < lines.length)
+                index += 1;
+            appendMessageCode(body, fence[1] || "", codeLines.join("\n"), ctx);
+            continue;
+        }
+        const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+        if (heading) {
+            const title = document.createElement(heading[1].length === 1 ? "h3" : heading[1].length === 2 ? "h4" : "h5");
+            title.className = "message-heading";
+            appendLinkifiedText(title, heading[2]);
+            body.appendChild(title);
+            index += 1;
+            continue;
+        }
+        if (/^>\s?/.test(line)) {
+            const quote = document.createElement("blockquote");
+            const quoteLines = [];
+            while (index < lines.length && /^>\s?/.test(lines[index])) {
+                quoteLines.push(lines[index].replace(/^>\s?/, ""));
+                index += 1;
+            }
+            appendMessageParagraph(quote, quoteLines);
+            body.appendChild(quote);
+            continue;
+        }
+        const unordered = /^\s*[-*+]\s+/.test(line);
+        const ordered = /^\s*\d+[.)]\s+/.test(line);
+        if (unordered || ordered) {
+            const list = document.createElement(ordered ? "ol" : "ul");
+            const pattern = ordered ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/;
+            while (index < lines.length && pattern.test(lines[index])) {
+                const item = document.createElement("li");
+                appendLinkifiedText(item, lines[index].replace(pattern, ""));
+                list.appendChild(item);
+                index += 1;
+            }
+            body.appendChild(list);
+            continue;
+        }
+        const paragraphLines = [];
+        while (index < lines.length && lines[index].trim() && !messageLineStartsBlock(lines[index])) {
+            paragraphLines.push(lines[index]);
+            index += 1;
+        }
+        if (!paragraphLines.length) {
+            paragraphLines.push(line);
+            index += 1;
+        }
+        appendMessageParagraph(body, paragraphLines);
+    }
+    bubble.appendChild(body);
+    if (source.length <= 2200 && lines.length <= 36)
+        return;
+    body.classList.add("is-collapsed");
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "message-expand";
+    toggle.textContent = resolveTr("Show full message", ctx);
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.addEventListener("click", () => {
+        const expanded = body.classList.toggle("is-expanded");
+        body.classList.toggle("is-collapsed", !expanded);
+        toggle.textContent = resolveTr(expanded ? "Collapse message" : "Show full message", ctx);
+        toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    });
+    bubble.appendChild(toggle);
+}
+
+const RUNTIME_API_BASE = "/api/runtime-console/";
+function isAbortError(error) {
+    return error instanceof DOMException
+        ? error.name === "AbortError"
+        : Boolean(error && typeof error === "object" && "name" in error && error.name === "AbortError");
+}
+function abortController(controller) {
+    if (controller)
+        controller.abort();
+}
+async function writeClipboardText(value, clipboard) {
+    if (!value)
+        return false;
+    try {
+        const cb = clipboard || (typeof navigator !== "undefined" ? navigator.clipboard : null);
+        if (!cb || typeof cb.writeText !== "function")
+            return false;
+        await cb.writeText(value);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+class RuntimeApiClient {
+    constructor(apiBase = RUNTIME_API_BASE) {
+        this.apiBase = apiBase;
+        this.token = "";
+    }
+    setToken(token) {
+        this.token = token;
+    }
+    getToken() {
+        return this.token;
+    }
+    clearToken() {
+        this.token = "";
+    }
+    async post(path, payload, signal) {
+        try {
+            const response = await fetch(this.apiBase + path, {
+                method: "POST",
+                headers: {
+                    Authorization: "Bearer " + this.token,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+                signal,
+            });
+            let data = null;
+            try {
+                data = await response.json();
+            }
+            catch {
+                data = null;
+            }
+            return { ok: response.ok, status: response.status, data };
+        }
+        catch (error) {
+            if (isAbortError(error))
+                return null;
+            return { ok: false, status: 0, data: null };
+        }
+    }
+}
+
+function windowDateTimeLabel(timestampMs, language) {
+    const value = Number(timestampMs);
+    if (!Number.isFinite(value) || value <= 0)
+        return translateText("time unavailable", language);
+    return new Date(value).toLocaleString(language === "zh-CN" ? "zh-CN" : "en");
+}
+function windowAgeLabel(timestampMs, now = Date.now()) {
+    return runtimeWindowActivityLabel(timestampMs, now);
+}
+function runtimeProjectClientId(project) {
+    const value = String(project || "");
+    const parts = value.split(":");
+    return parts.length >= 3 && parts[0] === "agent" ? parts[1] : "";
+}
+function appendChipElement(parent, text, extraClass = "") {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (extraClass ? " " + extraClass : "");
+    chip.textContent = text;
+    parent.appendChild(chip);
+    return chip;
+}
+function renderWindowActivityRows(node, activities, options = {}) {
+    if (!node)
+        return;
+    while (node.firstChild)
+        node.removeChild(node.firstChild);
+    const compact = options.compact ?? false;
+    const language = options.language;
+    for (const activity of activities) {
+        const item = document.createElement("article");
+        item.className = "window-activity-item" + (compact ? " compact" : "")
+            + (activity?.recorder_gap_session_id ? " recorder-gap" : "");
+        const head = document.createElement("div");
+        head.className = "window-activity-head";
+        const title = document.createElement("strong");
+        title.textContent = String(activity?.tool_name || activity?.method || "WebCodex call");
+        const time = document.createElement("span");
+        time.className = "muted small";
+        time.textContent = windowDateTimeLabel(activity?.started_at_ms, language);
+        head.appendChild(title);
+        head.appendChild(time);
+        item.appendChild(head);
+        const facts = document.createElement("div");
+        facts.className = "chips window-activity-facts";
+        appendChipElement(facts, String(activity?.status || "unknown"));
+        if (activity?.project)
+            appendChipElement(facts, String(activity.project));
+        if (activity?.meaningful)
+            appendChipElement(facts, "meaningful", "tone-runtime");
+        if (activity?.recorder_gap_session_id)
+            appendChipElement(facts, "recorder gap", "tone-warn");
+        if (activity?.response_streaming === true) {
+            appendChipElement(facts, "streaming timing unavailable", "tone-warn");
+        }
+        else if (typeof activity?.service_ms === "number") {
+            appendChipElement(facts, "service " + String(activity.service_ms) + " ms");
+        }
+        else if (activity?.meaningful) {
+            appendChipElement(facts, "service unavailable");
+        }
+        if (activity?.meaningful) {
+            if (typeof activity?.next_call_gap_ms === "number") {
+                appendChipElement(facts, "next gap " + String(activity.next_call_gap_ms) + " ms");
+            }
+            else {
+                appendChipElement(facts, "next gap unavailable");
+            }
+            if (typeof activity?.cycle_ms === "number") {
+                appendChipElement(facts, "cycle " + String(activity.cycle_ms) + " ms");
+            }
+        }
+        if (activity?.window_transition_kind === "overlap") {
+            appendChipElement(facts, "overlap from previous", "tone-warn");
+        }
+        item.appendChild(facts);
+        const links = Array.isArray(activity?.workflow_sessions) ? activity.workflow_sessions : [];
+        if (links.length) {
+            const relation = document.createElement("div");
+            relation.className = "muted small";
+            relation.textContent = links
+                .map((link) => String(link.workflow_session_id || "") + " · " + String(link.relation || "linked"))
+                .join(" · ");
+            item.appendChild(relation);
+        }
+        if (activity?.recorder_gap_session_id) {
+            const gap = document.createElement("div");
+            gap.className = "window-gap-note small";
+            gap.textContent = "Recording was not continued for " + String(activity.recorder_gap_session_id) + ".";
+            item.appendChild(gap);
+        }
+        if (activity?.server_trace_id) {
+            const trace = document.createElement("button");
+            trace.type = "button";
+            trace.className = "window-trace-copy";
+            trace.textContent = "trace " + String(activity.server_trace_id);
+            trace.title = translateText("Copy trace id", language);
+            if (options.onCopyTrace) {
+                trace.addEventListener("click", () => options.onCopyTrace(String(activity.server_trace_id)));
+            }
+            item.appendChild(trace);
+        }
+        node.appendChild(item);
+    }
+}
+function createWindowCard(row, selectedWindowKey, onSelect, now = Date.now()) {
+    const key = String(row?.client_window_key || "");
+    if (!key)
+        return null;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "runtime-window-card" + (key === selectedWindowKey ? " selected" : "");
+    if (key === selectedWindowKey)
+        button.setAttribute("aria-current", "true");
+    const head = document.createElement("div");
+    head.className = "runtime-window-card-head";
+    const title = document.createElement("strong");
+    title.textContent = "Window " + runtimeWindowShortKey(key);
+    const active = document.createElement("span");
+    active.className = "chip" + (Number(row?.active_count || 0) > 0 ? " tone-runtime" : "");
+    active.textContent = Number(row?.active_count || 0) > 0
+        ? String(row.active_count) + " active"
+        : String(row?.source || "window");
+    head.appendChild(title);
+    head.appendChild(active);
+    button.appendChild(head);
+    const call = document.createElement("span");
+    call.className = "muted small";
+    call.textContent = row?.last_tool_call_at_ms
+        ? "Last WebCodex call " + windowAgeLabel(row.last_tool_call_at_ms, now)
+        : "Last WebCodex activity " + windowAgeLabel(row?.last_seen_at_ms, now);
+    button.appendChild(call);
+    const meaningful = document.createElement("span");
+    meaningful.className = "muted small";
+    meaningful.textContent = row?.last_meaningful_activity_at_ms
+        ? "Last meaningful work " + windowAgeLabel(row.last_meaningful_activity_at_ms, now)
+        : "No meaningful WebCodex work recorded";
+    button.appendChild(meaningful);
+    const links = document.createElement("span");
+    links.className = "muted small";
+    links.textContent = localizedCountLabel(Number(row?.linked_session_count || 0), "linked Session")
+        + (Number(row?.recorder_gap_count || 0) ? " · " + String(row.recorder_gap_count) + " recorder gap" : "");
+    button.appendChild(links);
+    button.addEventListener("click", () => onSelect(key));
+    return button;
+}
+function renderWindowActiveRequests(activeNode, activeRequests, options = {}) {
+    if (!activeNode)
+        return;
+    while (activeNode.firstChild)
+        activeNode.removeChild(activeNode.firstChild);
+    const now = options.now ?? Date.now();
+    if (!activeRequests.length) {
+        const empty = document.createElement("p");
+        empty.className = "muted small";
+        empty.textContent = "No WebCodex request is currently active.";
+        activeNode.appendChild(empty);
+        return;
+    }
+    for (const request of activeRequests) {
+        const item = document.createElement("article");
+        item.className = "window-request-item";
+        const title = document.createElement("strong");
+        title.textContent = String(request?.tool_name || request?.method || "WebCodex request");
+        item.appendChild(title);
+        const meta = document.createElement("div");
+        meta.className = "muted small";
+        const facts = [
+            request?.project,
+            request?.started_at_ms ? "started " + windowAgeLabel(request.started_at_ms, now) : null,
+            typeof request?.elapsed_ms === "number" ? String(request.elapsed_ms) + " ms elapsed" : null,
+        ].filter(Boolean).map(String);
+        meta.textContent = facts.join(" · ");
+        item.appendChild(meta);
+        if (request?.server_trace_id) {
+            const trace = document.createElement("button");
+            trace.type = "button";
+            trace.className = "window-trace-copy";
+            trace.textContent = "trace " + String(request.server_trace_id);
+            if (options.onCopyTrace) {
+                trace.addEventListener("click", () => options.onCopyTrace(String(request.server_trace_id)));
+            }
+            item.appendChild(trace);
+        }
+        activeNode.appendChild(item);
+    }
+}
+function renderWindowLinkedSessions(sessionsNode, linkedSessions, onOpenSession) {
+    if (!sessionsNode)
+        return;
+    while (sessionsNode.firstChild)
+        sessionsNode.removeChild(sessionsNode.firstChild);
+    for (const session of linkedSessions) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "window-session-card";
+        const title = document.createElement("strong");
+        title.textContent = String(session?.title || session?.workflow_session_id || "Workflow Session");
+        const meta = document.createElement("span");
+        meta.className = "muted small";
+        meta.textContent = [
+            session?.workflow_session_id,
+            session?.lifecycle,
+            session?.project,
+            ...(Array.isArray(session?.relations) ? session.relations : []),
+        ].filter(Boolean).map(String).join(" · ");
+        button.appendChild(title);
+        button.appendChild(meta);
+        button.addEventListener("click", () => onOpenSession(session));
+        sessionsNode.appendChild(button);
+    }
+    if (!sessionsNode.childElementCount) {
+        const empty = document.createElement("p");
+        empty.className = "muted small";
+        empty.textContent = "No authorized Workflow Session links.";
+        sessionsNode.appendChild(empty);
+    }
+}
+function renderSessionWindowCorrelationLinks(linkedNode, links, onSelectWindow, now = Date.now()) {
+    if (!linkedNode)
+        return;
+    while (linkedNode.firstChild)
+        linkedNode.removeChild(linkedNode.firstChild);
+    for (const link of links) {
+        const key = String(link?.client_window_key || "");
+        if (!key)
+            continue;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "window-session-card" + (Number(link?.recorder_gap_count || 0) ? " recorder-gap" : "");
+        const title = document.createElement("strong");
+        title.textContent = "Window " + runtimeWindowShortKey(key);
+        const meta = document.createElement("span");
+        meta.className = "muted small";
+        meta.textContent = [
+            link?.source,
+            link?.last_seen_at_ms ? "last WebCodex activity " + windowAgeLabel(link.last_seen_at_ms, now) : null,
+            Number(link?.recorder_gap_count || 0) ? String(link.recorder_gap_count) + " recorder gap" : null,
+        ].filter(Boolean).map(String).join(" · ");
+        button.appendChild(title);
+        button.appendChild(meta);
+        button.addEventListener("click", () => onSelectWindow(key));
+        linkedNode.appendChild(button);
+    }
+    if (!links.length) {
+        const empty = document.createElement("p");
+        empty.className = "muted small";
+        empty.textContent = "No linked Window evidence.";
+        linkedNode.appendChild(empty);
+    }
+}
+function formatWindowDetailFields(detail, fallbackKey = "", now = Date.now(), language) {
+    if (!detail)
+        return null;
+    const key = String(detail.client_window_key || fallbackKey || "");
+    return {
+        title: "Window " + runtimeWindowShortKey(key),
+        key: key || "—",
+        source: String(detail.source || "—"),
+        activeCount: String(Number(detail.active_count || 0)),
+        lastCall: detail.last_tool_call_at_ms
+            ? windowAgeLabel(detail.last_tool_call_at_ms, now)
+            : "No completed tools/call activity",
+        lastMeaningful: detail.last_meaningful_activity_at_ms
+            ? windowAgeLabel(detail.last_meaningful_activity_at_ms, now)
+            : "No meaningful WebCodex work recorded",
+        activeStatus: Number(detail.active_count || 0) ? "Active request" : "No active request",
+        linkedStatus: localizedCountLabel(Number(detail.sessions_returned || 0), "Session", "Sessions", language) +
+            (detail.sessions_truncated ? " · bounded" : ""),
+        activityStatus: localizedCountLabel(Number(detail.activity_returned || 0), "event", "events", language) +
+            (detail.activity_truncated ? " · bounded" : ""),
+    };
+}
+function renderWindowCards(node, windowRows, selectedWindowKey, onSelect, now = Date.now()) {
+    if (!node)
+        return;
+    while (node.firstChild)
+        node.removeChild(node.firstChild);
+    for (const row of windowRows) {
+        const card = createWindowCard(row, selectedWindowKey, onSelect, now);
+        if (card)
+            node.appendChild(card);
+    }
+}
+
+function communicationTimeLabel(value, language) {
+    if (typeof value !== "number" || !Number.isFinite(value))
+        return translateText("time unavailable", language);
+    return new Date(value).toLocaleString(language === "zh-CN" ? "zh-CN" : "en");
+}
+function parseAgentIds(value) {
+    const ids = value
+        .split(/[\s,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    return Array.from(new Set(ids));
+}
+function deliveryAgentLabel(agentId, agents = []) {
+    const agent = agents.find((a) => String(a?.agent_id || "") === agentId);
+    return agent ? String(agent.display_name || agent.handle || agentId) : agentId;
+}
+function appendChipElement(parent, text, extraClass = "") {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (extraClass ? " " + extraClass : "");
+    chip.textContent = text;
+    parent.appendChild(chip);
+    return chip;
+}
+function createAgentRow(agent, selectedAgentId, options) {
+    const agentId = String(agent?.agent_id || "");
+    if (!agentId)
+        return null;
+    const language = options.language;
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "communication-row" + (agentId === selectedAgentId ? " selected" : "");
+    if (agentId === selectedAgentId)
+        row.setAttribute("aria-current", "true");
+    const head = document.createElement("div");
+    head.className = "communication-row-head";
+    const title = document.createElement("span");
+    title.className = "communication-row-title";
+    title.textContent = String(agent?.display_name || agent?.handle || "Agent") + " · @" + String(agent?.handle || "agent");
+    const unread = document.createElement("span");
+    unread.className = "chip" + (Number(agent?.queued_delivery_count || 0) > 0 ? " tone-warn" : "");
+    unread.textContent = localizedCountLabel(agent?.queued_delivery_count, "queued delivery", "queued deliveries", language);
+    head.appendChild(title);
+    head.appendChild(unread);
+    row.appendChild(head);
+    const meta = document.createElement("span");
+    meta.className = "communication-row-meta";
+    meta.textContent = agentId
+        + (language === "zh-CN" ? " · 配置版本 r" : " · profile r") + String(agent?.profile_revision || 0)
+        + (language === "zh-CN" ? " · 控制器 g" : " · controller g") + String(agent?.current_controller_generation || 0)
+        + " · " + localizedCountLabel(agent?.active_endpoint_count, "active Endpoint", "active Endpoints", language)
+        + " · " + localizedCountLabel(agent?.unresolved_wake_count, "unresolved Wake", "unresolved Wakes", language);
+    row.appendChild(meta);
+    row.addEventListener("click", () => options.onSelect(agentId));
+    return row;
+}
+function renderAgentRows(list, agents, selectedAgentId, options) {
+    if (!list)
+        return;
+    while (list.firstChild)
+        list.removeChild(list.firstChild);
+    for (const agent of agents) {
+        const row = createAgentRow(agent, selectedAgentId, options);
+        if (row)
+            list.appendChild(row);
+    }
+}
+function createConversationRow(conversation, selectedConversationId, options) {
+    const conversationId = String(conversation?.conversation_id || "");
+    if (!conversationId)
+        return null;
+    const language = options.language;
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "communication-row" + (conversationId === selectedConversationId ? " selected" : "");
+    if (conversationId === selectedConversationId)
+        row.setAttribute("aria-current", "true");
+    const head = document.createElement("div");
+    head.className = "communication-row-head";
+    const title = document.createElement("span");
+    title.className = "communication-row-title";
+    title.textContent = String(conversation?.title || translateText("Untitled Conversation", language));
+    const count = document.createElement("span");
+    count.className = "chip";
+    count.textContent = localizedCountLabel(conversation?.message_count, "message", "messages", language);
+    head.appendChild(title);
+    head.appendChild(count);
+    row.appendChild(head);
+    const meta = document.createElement("span");
+    meta.className = "communication-row-meta";
+    meta.textContent = conversationId
+        + " · " + localizedCountLabel(conversation?.participant_count, "participant", "participants", language)
+        + (language === "zh-CN" ? " · 序号 " : " · seq ") + String(conversation?.last_seq || 0);
+    row.appendChild(meta);
+    row.addEventListener("click", () => options.onSelect(conversationId));
+    return row;
+}
+function renderConversationRows(list, conversations, selectedConversationId, options) {
+    if (!list)
+        return;
+    while (list.firstChild)
+        list.removeChild(list.firstChild);
+    for (const conversation of conversations) {
+        const row = createConversationRow(conversation, selectedConversationId, options);
+        if (row)
+            list.appendChild(row);
+    }
+}
+function createConversationMessageCard(message, agents, options = {}) {
+    const language = options.language;
+    const author = message?.author || {};
+    const agentAuthored = String(author.participant_kind || "") === "agent";
+    const card = document.createElement("article");
+    card.className = "conversation-message" + (agentAuthored ? " agent-authored" : "");
+    const head = document.createElement("div");
+    head.className = "conversation-message-head";
+    const name = document.createElement("span");
+    name.className = "conversation-message-author";
+    name.textContent = agentAuthored
+        ? "Agent · " + String(author.display_name || author.handle || (author.agent_id ? deliveryAgentLabel(String(author.agent_id), agents) : "") || author.agent_id || translateText("unknown", language))
+        : (language === "zh-CN" ? "人工 · " : "Human · ") + String(author.principal_kind || (language === "zh-CN" ? "凭证主体" : "credential principal"));
+    const seq = document.createElement("span");
+    seq.className = "muted small";
+    seq.textContent = "#" + String(message?.seq || 0) + " · " + communicationTimeLabel(message?.created_at_unix_ms, language);
+    head.appendChild(name);
+    head.appendChild(seq);
+    card.appendChild(head);
+    const meta = document.createElement("div");
+    meta.className = "conversation-message-meta";
+    const metaParts = [String(message?.message_id || "")];
+    if (author.agent_id)
+        metaParts.push(String(author.agent_id));
+    if (message?.reply_to)
+        metaParts.push((language === "zh-CN" ? "回复 " : "reply to ") + String(message.reply_to));
+    meta.textContent = metaParts.join(" · ");
+    card.appendChild(meta);
+    const body = document.createElement("div");
+    body.className = "conversation-message-body";
+    body.textContent = String(message?.body || "");
+    card.appendChild(body);
+    const deliveries = Array.isArray(message?.deliveries) ? message.deliveries : [];
+    const delivery = document.createElement("div");
+    delivery.className = "conversation-message-deliveries";
+    delivery.textContent = deliveries.length
+        ? (language === "zh-CN" ? "Agent 收件箱：" : "Agent Inbox: ") + deliveries.map((item) => deliveryAgentLabel(String(item?.recipient_agent_id || ""), agents) + " " + translateText(String(item?.state || "unknown"), language)).join(" · ")
+        : (language === "zh-CN" ? "没有 Agent 收件箱投递 · 仅保留记录 / 人工房间" : "No Agent Inbox delivery · transcript / Human room only");
+    card.appendChild(delivery);
+    return card;
+}
+function renderConversationMessages(transcript, messages, agents, options = {}) {
+    if (!transcript)
+        return;
+    while (transcript.firstChild)
+        transcript.removeChild(transcript.firstChild);
+    for (const message of messages) {
+        const card = createConversationMessageCard(message, agents, options);
+        transcript.appendChild(card);
+    }
+    transcript.scrollTop = transcript.scrollHeight;
+}
+function createInboxDeliveryCard(item, agents, options) {
+    const language = options.language;
+    const row = document.createElement("article");
+    row.className = "communication-row inbox-delivery";
+    const head = document.createElement("div");
+    head.className = "communication-row-head";
+    const title = document.createElement("span");
+    title.className = "communication-row-title";
+    title.textContent = String(item?.conversation_title || translateText("Untitled Conversation", language)) + " · #" + String(item?.message?.seq || 0);
+    const consume = document.createElement("button");
+    consume.type = "button";
+    consume.className = "text-button";
+    consume.textContent = translateText("Consume", language);
+    consume.addEventListener("click", () => options.onConsume(String(item?.delivery_id || "")));
+    head.appendChild(title);
+    head.appendChild(consume);
+    row.appendChild(head);
+    const meta = document.createElement("span");
+    meta.className = "communication-row-meta";
+    meta.textContent = String(item?.delivery_id || "")
+        + (language === "zh-CN" ? " · 来自 " : " · from ")
+        + (item?.message?.author?.participant_kind === "agent"
+            ? deliveryAgentLabel(String(item.message.author.agent_id || ""), agents)
+            : (language === "zh-CN" ? "人工" : "Human"));
+    row.appendChild(meta);
+    const body = document.createElement("div");
+    body.className = "inbox-message-preview";
+    body.textContent = String(item?.message?.body || "");
+    row.appendChild(body);
+    return row;
+}
+function renderInboxDeliveryCards(container, inbox, agents, options) {
+    if (!container)
+        return;
+    while (container.firstChild)
+        container.removeChild(container.firstChild);
+    for (const item of inbox) {
+        const row = createInboxDeliveryCard(item, agents, options);
+        container.appendChild(row);
+    }
+}
+
+function formatUpdatedTime(timestamp, language) {
+    if (typeof timestamp !== "number")
+        return translateText("time unavailable", language);
+    return new Date(timestamp * 1000).toLocaleTimeString(language === "zh-CN" ? "zh-CN" : "en");
+}
+function formatSessionDateTime(timestamp, language) {
+    if (typeof timestamp !== "number")
+        return translateText("time unavailable", language);
+    return new Date(timestamp * 1000).toLocaleString(language === "zh-CN" ? "zh-CN" : "en");
+}
+function formatLivenessPresentation(session, language) {
+    const presentation = workflowSessionLivenessPresentation(session);
+    if (language !== "zh-CN")
+        return presentation;
+    let label = translateText(String(presentation.label || "idle"), language);
+    if (presentation.state === "idle" && String(presentation.label || "").startsWith("idle · ")) {
+        label = translateText("idle", language) + " · " + String(presentation.label).slice("idle · ".length);
+    }
+    return { ...presentation, label, tooltip: translateText(String(presentation.tooltip || ""), language) };
+}
+function activityKindLabel(activity, language) {
+    const kind = String(activity && activity.kind || "Activity");
+    if (activity && activity.job_handoff) {
+        if (kind === "Tested")
+            return language === "zh-CN" ? "测试" : "Test";
+        if (kind === "Ran")
+            return language === "zh-CN" ? "命令" : "Command";
+    }
+    if (kind === "Explored" && activity && typeof activity.group_count === "number") {
+        return (language === "zh-CN" ? "探索 ×" : "Explored ×") + activity.group_count;
+    }
+    if (language !== "zh-CN")
+        return kind;
+    const labels = {
+        Activity: "活动",
+        Progress: "进度",
+        Explored: "探索",
+        Edited: "编辑",
+        Tested: "测试",
+        Ran: "运行",
+        Reviewed: "审查",
+    };
+    return labels[kind] || kind;
+}
+function activityFacts(activity, includeTiming, language) {
+    const facts = [];
+    if (activity && typeof activity.group_count === "number") {
+        if (Array.isArray(activity.group_kinds) && activity.group_kinds.length) {
+            facts.push(activity.group_kinds.map(String).join(" / "));
+        }
+        if (Array.isArray(activity.group_tools) && activity.group_tools.length) {
+            facts.push(activity.group_tools.map(String).join(", "));
+        }
+    }
+    else if (activity && activity.tool) {
+        facts.push(String(activity.tool));
+    }
+    if (activity && activity.kind === "Progress") {
+        facts.push(language === "zh-CN" ? "仅供参考" : "informational");
+    }
+    else if (activity && activity.job_handoff) {
+        facts.push(language === "zh-CN" ? "已移交" : "handed off");
+        if (activity.execution_state) {
+            facts.push((language === "zh-CN" ? "执行 " : "execution ") + translateText(String(activity.execution_state), language));
+        }
+    }
+    else if (activity && activity.state) {
+        facts.push(String(activity.state));
+    }
+    if (activity && activity.job_id) {
+        facts.push("job " + String(activity.job_id));
+    }
+    if (includeTiming && activity && typeof activity.started_at === "number") {
+        facts.push(new Date(activity.started_at * 1000).toLocaleTimeString(language === "zh-CN" ? "zh-CN" : "en"));
+    }
+    return facts;
+}
+function activityDescription(activity, language) {
+    if (!activity)
+        return "";
+    const parts = [activityKindLabel(activity, language), ...activityFacts(activity, false, language)];
+    if (activity.summary && !activity.job_handoff)
+        parts.push(String(activity.summary));
+    return parts.join(" · ");
+}
+function appendActivityPreview(parent, label, activity, language) {
+    if (!activity)
+        return;
+    const row = document.createElement("div");
+    row.className = "activity-preview muted small";
+    const prefix = document.createElement("span");
+    prefix.className = "activity-preview-label";
+    prefix.textContent = label;
+    const text = document.createElement("span");
+    text.textContent = activityDescription(activity, language);
+    row.appendChild(prefix);
+    row.appendChild(text);
+    parent.appendChild(row);
+}
+function createTimelineEvent(activity, language) {
+    const item = document.createElement("li");
+    item.className = "timeline-event";
+    if (activity && activity.kind === "Progress")
+        item.classList.add("reported-progress");
+    if (activity && ["failed", "timed_out"].includes(String(activity.state || "")))
+        item.classList.add("failed");
+    const head = document.createElement("div");
+    head.className = "timeline-head";
+    const kind = document.createElement("span");
+    kind.className = "timeline-kind";
+    kind.textContent = activityKindLabel(activity, language);
+    const meta = document.createElement("span");
+    meta.className = "muted small";
+    meta.textContent = activityFacts(activity, true, language).join(" · ");
+    head.appendChild(kind);
+    head.appendChild(meta);
+    item.appendChild(head);
+    if (activity && activity.summary) {
+        const body = document.createElement("div");
+        body.className = "timeline-body small";
+        body.textContent = String(activity.summary);
+        item.appendChild(body);
+    }
+    if (activity && Array.isArray(activity.paths) && activity.paths.length) {
+        const paths = document.createElement("div");
+        paths.className = "muted small";
+        paths.textContent = activity.paths.map(String).join(" · ");
+        item.appendChild(paths);
+    }
+    return item;
+}
+function renderTimelineEvents(container, activities, language) {
+    if (!container)
+        return;
+    while (container.firstChild)
+        container.removeChild(container.firstChild);
+    for (const activity of activities) {
+        const item = createTimelineEvent(activity, language);
+        container.appendChild(item);
+    }
+}
+
+const RUNTIME_CREDENTIAL_SESSION_KEY = "webcodex.runtime.credential.v1";
+const APPEARANCE_STORAGE_KEY = "webcodex.runtime.appearance.v1";
+const WORKSPACE_VIEW_STORAGE_KEY = "webcodex.runtime.workspace-view.v1";
+const DRAFT_STORAGE_PREFIX = "webcodex.runtime.draft.v1.";
+const DEVICE_DISCLOSURE_STORAGE_PREFIX = "webcodex.runtime.runner-open.v1.";
+const APPEARANCE_MEDIA_QUERY = "(prefers-color-scheme: light)";
+function appearancePreference(value) {
+    return value === "light" || value === "dark" || value === "system" ? value : "system";
+}
+function loadAppearancePreference() {
+    try {
+        return appearancePreference(window.localStorage.getItem(APPEARANCE_STORAGE_KEY));
+    }
+    catch {
+        return "system";
+    }
+}
+function persistAppearancePreference(preference) {
+    try {
+        window.localStorage.setItem(APPEARANCE_STORAGE_KEY, preference);
+    }
+    catch {
+        /* Storage can be unavailable in hardened browser contexts. */
+    }
+}
+function resolvedAppearance(preference, prefersLight) {
+    if (preference !== "system")
+        return preference;
+    return prefersLight ? "light" : "dark";
+}
+function workspaceViewPreference(value) {
+    return value === "operations" || value === "windows" ? value : "sessions";
+}
+function loadWorkspaceViewPreference() {
+    try {
+        return workspaceViewPreference(window.localStorage.getItem(WORKSPACE_VIEW_STORAGE_KEY));
+    }
+    catch {
+        return "sessions";
+    }
+}
+function persistWorkspaceViewPreference(view) {
+    try {
+        window.localStorage.setItem(WORKSPACE_VIEW_STORAGE_KEY, view);
+    }
+    catch {
+        /* Storage can be unavailable in hardened browser contexts. */
+    }
+}
+function loadRememberedRuntimeCredential() {
+    try {
+        return window.sessionStorage.getItem(RUNTIME_CREDENTIAL_SESSION_KEY)?.trim() || "";
+    }
+    catch {
+        return "";
+    }
+}
+function persistRuntimeCredentialForTab(token, remember) {
+    try {
+        if (remember && token) {
+            window.sessionStorage.setItem(RUNTIME_CREDENTIAL_SESSION_KEY, token);
+        }
+        else {
+            window.sessionStorage.removeItem(RUNTIME_CREDENTIAL_SESSION_KEY);
+        }
+    }
+    catch {
+        /* Storage can be unavailable in hardened browser contexts. */
+    }
+}
+function clearRememberedRuntimeCredential() {
+    try {
+        window.sessionStorage.removeItem(RUNTIME_CREDENTIAL_SESSION_KEY);
+    }
+    catch {
+        /* Storage can be unavailable in hardened browser contexts. */
+    }
+}
+function currentDraftStorageKey(project, sessionId) {
+    const projectId = String(project || "");
+    const workflowSessionId = String(sessionId || "");
+    return projectId && workflowSessionId
+        ? DRAFT_STORAGE_PREFIX + encodeURIComponent(projectId) + "." + encodeURIComponent(workflowSessionId)
+        : "";
+}
+function loadDraft(project, sessionId) {
+    const key = currentDraftStorageKey(project, sessionId);
+    if (!key)
+        return "";
+    try {
+        return window.sessionStorage.getItem(key) || "";
+    }
+    catch {
+        return "";
+    }
+}
+function saveDraft(project, sessionId, text) {
+    const key = currentDraftStorageKey(project, sessionId);
+    if (!key)
+        return;
+    try {
+        if (text)
+            window.sessionStorage.setItem(key, text);
+        else
+            window.sessionStorage.removeItem(key);
+    }
+    catch {
+        /* Draft remains in active input when storage is unavailable. */
+    }
+}
+function clearDraft(project, sessionId) {
+    const key = currentDraftStorageKey(project, sessionId);
+    if (!key)
+        return;
+    try {
+        window.sessionStorage.removeItem(key);
+    }
+    catch {
+        /* No-op in hardened browser contexts. */
+    }
+}
+function clearRuntimeDrafts() {
+    try {
+        const keys = [];
+        for (let index = 0; index < window.sessionStorage.length; index += 1) {
+            const key = window.sessionStorage.key(index);
+            if (key?.startsWith(DRAFT_STORAGE_PREFIX))
+                keys.push(key);
+        }
+        for (const key of keys)
+            window.sessionStorage.removeItem(key);
+    }
+    catch {
+        /* No-op in hardened browser contexts. */
+    }
+}
+function deviceDisclosureStorageKey(clientId) {
+    return DEVICE_DISCLOSURE_STORAGE_PREFIX + encodeURIComponent(clientId);
+}
+function storedDeviceDisclosure(clientId) {
+    try {
+        const value = window.localStorage.getItem(deviceDisclosureStorageKey(clientId));
+        return value === "open" ? true : value === "closed" ? false : null;
+    }
+    catch {
+        return null;
+    }
+}
+function persistDeviceDisclosure(clientId, open) {
+    try {
+        window.localStorage.setItem(deviceDisclosureStorageKey(clientId), open ? "open" : "closed");
+    }
+    catch {
+        /* Disclosure remains active for current render. */
+    }
+}
+
+function pendingAttentionCount(attention) {
+    return ["open_risks", "open_todos", "open_questions", "open_guidance"].reduce((total, key) => total + (typeof attention?.[key] === "number" ? Math.max(0, Math.floor(attention[key])) : 0), 0);
+}
+function runnerAttentionCount(runner) {
+    return pendingAttentionCount(runner?.sessions?.attention);
+}
+function attentionLabel(attention, language) {
+    const parts = [];
+    for (const [key, singular] of [
+        ["open_risks", "risk"],
+        ["open_todos", "todo"],
+        ["open_questions", "question"],
+        ["open_guidance", "guidance"],
+    ]) {
+        const count = typeof attention?.[key] === "number" ? attention[key] : 0;
+        if (count)
+            parts.push(localizedCountLabel(count, singular, singular + "s", language));
+    }
+    return parts.length ? parts.join(" · ") : translateText("No retained pending attention", language);
+}
+function formatProjectIdentity(project, language) {
+    if (language !== "zh-CN")
+        return runtimeProjectIdentityText(project);
+    if (!project || typeof project.id !== "string" || !project.id) {
+        return translateText("No project selected", language);
+    }
+    const runner = typeof project.client_id === "string" && project.client_id
+        ? project.client_id
+        : translateText("unknown", language);
+    const path = typeof project.path === "string" && project.path ? project.path : "不可用";
+    return "运行器：" + runner + " · 项目：" + project.id + " · 工作空间：" + path;
+}
+function extractProjectSelectorDevices(projects, knownDevices = [], runnerRows = [], selectedDevice = "") {
+    const devices = new Set(knownDevices);
+    for (const device of runtimeDeviceIds(projects))
+        devices.add(device);
+    for (const runner of runnerRows) {
+        const clientId = typeof runner?.client_id === "string" ? runner.client_id : "";
+        if (clientId)
+            devices.add(clientId);
+    }
+    if (selectedDevice)
+        devices.add(selectedDevice);
+    return Array.from(devices).sort((left, right) => left.localeCompare(right));
+}
+function formatProjectLabel(project) {
+    const name = project && project.name ? String(project.name) : "";
+    const id = project && project.id ? String(project.id) : "";
+    const identity = name && name !== id ? name + " — " + id : id;
+    const status = project && project.connected ? String(project.agent_status || "online") : "offline";
+    return identity + " · " + status;
+}
+function mergeEffectiveProjects(projects, homeProjectRows = []) {
+    const aggregates = new Map();
+    for (const row of homeProjectRows) {
+        if (row && typeof row.id === "string")
+            aggregates.set(row.id, row);
+    }
+    return (Array.isArray(projects) ? projects : []).map((project) => {
+        const aggregate = aggregates.get(String(project?.id || ""));
+        return aggregate ? { ...project, sessions: aggregate.sessions } : project;
+    });
+}
+function formatRuntimeOverviewMetrics(data, language) {
+    if (!data)
+        return null;
+    const buildGitCommit = data.build_git_commit;
+    const buildText = buildGitCommit
+        ? (language === "zh-CN" ? "构建 " : "build ") +
+            buildGitCommit +
+            (data.build_git_dirty ? (language === "zh-CN" ? " · 有未提交更改" : " · dirty") : "")
+        : translateText("build unavailable", language);
+    const projectsText = data.projects_available
+        ? localizedCountLabel(data.visible_projects, "visible Project", "visible Projects", language) +
+            (data.projects_truncated ? (language === "zh-CN" ? " · 不完整" : " · partial") : "")
+        : translateText("project:read unavailable", language);
+    const jobsText = localizedCountLabel(data.active_jobs, "active Job", "active Jobs", language) +
+        (data.mixed_builds_present ? (language === "zh-CN" ? " · 存在混合构建" : " · mixed builds") : "");
+    const sessionsText = localizedCountLabel(data.workflow_sessions?.active, "active Session", "active Sessions", language) +
+        " · " +
+        localizedCountLabel(data.workflow_sessions?.running, "running Session", "running Sessions", language) +
+        (data.workflow_sessions?.truncated
+            ? language === "zh-CN"
+                ? " · 有界汇总"
+                : " · bounded aggregate"
+            : "");
+    const recentMeta = data.recent_sessions || {};
+    const recentStatusText = localizedCountLabel(recentMeta.returned, "Session", "Sessions", language) +
+        (recentMeta.truncated
+            ? (language === "zh-CN" ? " · 前 " : " · top ") + String(recentMeta.returned || 0)
+            : "") +
+        (recentMeta.scan_truncated
+            ? language === "zh-CN"
+                ? " · 扫描不完整"
+                : " · partial scan"
+            : "");
+    return {
+        identity: [data.service, data.version].filter(Boolean).join(" · "),
+        build: buildText,
+        runners: localizedCountLabel(data.runner_count, "Runner", "Runners", language),
+        alignment: localizedCountLabel(data.runners_online, "online", "online", language) +
+            " · " +
+            localizedCountLabel(data.runners_stale, "stale", "stale", language) +
+            " · " +
+            localizedCountLabel(data.runners_unavailable, "unavailable", "unavailable", language),
+        projects: projectsText,
+        jobs: jobsText,
+        attention: attentionLabel(data.workflow_sessions, language),
+        sessions: sessionsText,
+        recentStatus: recentStatusText,
+    };
+}
+
+function operationKey(prefix) {
+    const random = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+    return prefix + "-" + random;
+}
+function idempotencyKeyFor(pending, fingerprint, prefix) {
+    return pending && pending.fingerprint === fingerprint
+        ? pending
+        : { fingerprint, key: operationKey(prefix) };
+}
+function formatCommunicationAvailability(readAvailable, manageAvailable, language) {
+    const available = readAvailable !== false;
+    if (readAvailable === null) {
+        return language === "zh-CN" ? "正在检查 communication:read…" : "communication:read checking…";
+    }
+    if (!available) {
+        return language === "zh-CN" ? "communication:read 不可用" : "communication:read unavailable";
+    }
+    return ("communication:read" +
+        (manageAvailable === false
+            ? language === "zh-CN"
+                ? " · 只读"
+                : " · read only"
+            : language === "zh-CN"
+                ? " · 当前视图每 30 秒刷新 · 端点租约每 30 秒续期"
+                : " · 30s refresh while visible · 30s endpoint lease renewal"));
+}
+function formatAgentCardRevision(agent, language) {
+    return ((language === "zh-CN" ? "配置版本 " : "Profile revision ") +
+        String(agent?.profile_revision || 0) +
+        (language === "zh-CN" ? " · 控制器代数 " : " · controller generation ") +
+        String(agent?.current_controller_generation || 0) +
+        (language === "zh-CN" ? " · 更新于 " : " · updated ") +
+        formatCommunicationTime(agent?.updated_at_unix_ms, language));
+}
+function formatAgentWakeStatus(agent, language) {
+    const unresolvedWakeCount = Number(agent?.unresolved_wake_count || 0);
+    const latestWakeState = String(agent?.latest_wake_state || "none");
+    return (localizedCountLabel(unresolvedWakeCount, "unresolved Wake", "unresolved Wakes", language) +
+        (language === "zh-CN" ? " · 最近状态 " : " · latest ") +
+        translateText(latestWakeState, language) +
+        (language === "zh-CN"
+            ? " · 收件箱投递与唤醒消费彼此独立"
+            : " · Inbox Delivery and Wake consumption remain independent"));
+}
+function formatAgentEndpointStatus(endpoint, language) {
+    if (!endpoint) {
+        return language === "zh-CN"
+            ? "此窗口尚未作为该 Agent。Agent 卡片、对话、收件箱投递和唤醒意图仍会持久保留。"
+            : "This window is not acting as the Agent. Agent Card, Conversations, Inbox deliveries, and Wake Intents remain durable.";
+    }
+    return ((language === "zh-CN" ? "浏览器端点 " : "Browser Endpoint ") +
+        endpoint.endpoint_id +
+        " · " +
+        translateText(endpoint.lifecycle, language) +
+        (language === "zh-CN" ? " · 代数 " : " · generation ") +
+        String(endpoint.controller_generation) +
+        (language === "zh-CN" ? " · 租约至 " : " · lease ") +
+        formatCommunicationTime(endpoint.lease_expires_at_unix_ms, language) +
+        (language === "zh-CN"
+            ? " · 运行控制台适配器：仅轮询（运行时可唤醒："
+            : " · Runtime Console adapter: polling only (runtime wake capable: ") +
+        String(endpoint.wake_capable) +
+        ")");
+}
+function formatConversationSeq(summary, detail, language) {
+    return ((language === "zh-CN" ? "序号 " : "seq ") +
+        String(summary?.last_seq || 0) +
+        " · " +
+        localizedCountLabel(summary?.message_count, "message", "messages", language) +
+        (Number(detail?.after_seq || 0) > 0 || detail?.truncated
+            ? language === "zh-CN"
+                ? " · 最近有界页面"
+                : " · recent bounded page"
+            : ""));
+}
+function validateAgentCreateInputs(handle, displayName, description, labelsRaw) {
+    const cleanHandle = handle.trim();
+    const cleanName = displayName.trim();
+    const cleanDescription = description.trim();
+    const labels = parseAgentIds(labelsRaw);
+    if (!cleanHandle || !cleanName) {
+        return { valid: false, error: "Handle and display name are required." };
+    }
+    const fingerprint = JSON.stringify({
+        handle: cleanHandle,
+        displayName: cleanName,
+        description: cleanDescription,
+        labels,
+    });
+    return {
+        valid: true,
+        data: {
+            handle: cleanHandle,
+            displayName: cleanName,
+            description: cleanDescription,
+            labels,
+            fingerprint,
+        },
+    };
+}
+function validateAgentUpdateInputs(handle, displayName, description, labelsRaw) {
+    const cleanHandle = handle.trim();
+    const cleanName = displayName.trim();
+    const cleanDescription = description.trim();
+    const specialtyLabels = parseAgentIds(labelsRaw);
+    if (!cleanHandle || !cleanName) {
+        return { valid: false, error: "Handle and display name are required." };
+    }
+    return {
+        valid: true,
+        data: {
+            handle: cleanHandle,
+            displayName: cleanName,
+            description: cleanDescription,
+            specialtyLabels,
+        },
+    };
+}
+function validateConversationCreateInputs(title, agentIdsRaw, defaultAgentId = "") {
+    const cleanTitle = title.trim();
+    const agentIds = parseAgentIds(agentIdsRaw || defaultAgentId);
+    if (agentIds.length === 0) {
+        return { valid: false, error: "At least one Agent id is required." };
+    }
+    const fingerprint = JSON.stringify({ title: cleanTitle, agentIds: [...agentIds].sort() });
+    return {
+        valid: true,
+        data: {
+            title: cleanTitle,
+            agentIds,
+            fingerprint,
+        },
+    };
+}
+
+const RUNTIME_ICON_PATHS = {
+    folder: ["M3 6h7l2 2h9v10H3V6Z"],
+    monitor: ["M4 5h16v12H4V5Z", "M8 21h8", "M12 17v4"],
+    message: ["M5 5h14v12H9l-4 3V5Z", "M9 9h6", "M9 13h4"],
+    reply: ["m10 8-5 4 5 4", "M5 12h7a6 6 0 0 1 6 6"],
+    edit: ["m4 16-.5 4.5L8 20l10.5-10.5-4-4L4 16Z", "m12.5 7.5 4 4"],
+    trash: ["M4 7h16", "M9 7V4h6v3", "m7 7 1 13h8l1-13", "M10 11v5", "M14 11v5"],
+    copy: ["M8 8h11v11H8V8Z", "M5 16H4V4h12v1"],
+};
+function runtimeIcon(name, className = "") {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    if (className)
+        svg.setAttribute("class", className);
+    const paths = RUNTIME_ICON_PATHS[name] || [];
+    for (const pathData of paths) {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", pathData);
+        svg.appendChild(path);
+    }
+    return svg;
+}
+function createMessageAction(label, iconName, action, danger = false) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "message-action" + (danger ? " danger" : "");
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.appendChild(runtimeIcon(iconName));
+    button.addEventListener("click", action);
+    return button;
+}
+
+const API_BASE = RUNTIME_API_BASE;
+const apiClient = new RuntimeApiClient(API_BASE);
+const REFRESH_MS = 30000;
+const WINDOW_REFRESH_MS = 3000;
+const COLLABORATION_WAIT_SECS = 25;
+const PROJECT_SEARCH_DEBOUNCE_MS = 200;
+const MOBILE_NAVIGATION_MEDIA = "(max-width: 900px)";
+const WIDE_CONTEXT_MEDIA = "(min-width: 1280px)";
+let contextUserIntent = null;
+// Verified localization mapping: "Close session context": "关闭会话上下文"
 const appearanceMedia = window.matchMedia(APPEARANCE_MEDIA_QUERY);
 let runtimeLanguage = languagePreference(document.documentElement.dataset.language);
 const staticTextSources = [];
@@ -1279,26 +2682,11 @@ function show(id, visible) {
     if (node)
         node.hidden = !visible;
 }
-function languagePreference(value) {
-    return value === "zh-CN" ? "zh-CN" : "en";
-}
-function loadLanguagePreference() {
-    try {
-        const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
-        if (stored === "en" || stored === "zh-CN")
-            return stored;
-    }
-    catch { /* Fall through to the browser language. */ }
-    return navigator.language && navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
-}
 function tr(source) {
-    return runtimeLanguage === "zh-CN" ? (RUNTIME_ZH_TEXT[source] || source) : source;
+    return translateText(source, runtimeLanguage);
 }
 function translatedStaticNodeValue(source) {
-    const match = /^(\s*)([\s\S]*?)(\s*)$/.exec(source);
-    if (!match)
-        return source;
-    return match[1] + tr(match[2]) + match[3];
+    return translateStaticNodeValue(source, runtimeLanguage);
 }
 function captureStaticUiSources() {
     if (staticTextSources.length || staticAttributeSources.length)
@@ -1376,20 +2764,13 @@ function applyLanguage(language, persist = true, rerender = true) {
         renderLanguageSensitiveUi();
 }
 function appearancePreference(value) {
-    return value === "light" || value === "dark" || value === "system" ? value : "system";
+    return validateAppearancePreference(value);
 }
 function loadAppearancePreference() {
-    try {
-        return appearancePreference(window.localStorage.getItem(APPEARANCE_STORAGE_KEY));
-    }
-    catch {
-        return "system";
-    }
+    return loadAppearanceFromStorage();
 }
 function resolvedAppearance(preference) {
-    if (preference !== "system")
-        return preference;
-    return appearanceMedia.matches ? "light" : "dark";
+    return resolveThemeAppearance(preference, appearanceMedia.matches);
 }
 function applyAppearance(preference, persist = true) {
     const resolved = resolvedAppearance(preference);
@@ -1404,23 +2785,14 @@ function applyAppearance(preference, persist = true) {
         trigger.title = label;
         trigger.setAttribute("aria-label", runtimeLanguage === "zh-CN" ? label + "。" + tr("Choose appearance") : label + ". " + tr("Choose appearance"));
     });
-    if (!persist)
-        return;
-    try {
-        window.localStorage.setItem(APPEARANCE_STORAGE_KEY, preference);
-    }
-    catch { /* Appearance remains active when storage is unavailable. */ }
+    if (persist)
+        persistAppearanceToStorage(preference);
 }
 function workspaceViewPreference(value) {
-    return value === "operations" || value === "windows" ? value : "sessions";
+    return validateWorkspaceViewPreference(value);
 }
 function loadWorkspaceViewPreference() {
-    try {
-        return workspaceViewPreference(window.localStorage.getItem(WORKSPACE_VIEW_STORAGE_KEY));
-    }
-    catch {
-        return "sessions";
-    }
+    return loadWorkspaceViewFromStorage();
 }
 function renderWorkspaceHeading() {
     if (workspaceView === "operations") {
@@ -1475,12 +2847,8 @@ function applyWorkspaceView(view, persist = true) {
     renderWorkspaceHeading();
     syncResponsiveNavigation();
     setMobileNavigationOpen(false, false);
-    if (persist) {
-        try {
-            window.localStorage.setItem(WORKSPACE_VIEW_STORAGE_KEY, workspaceView);
-        }
-        catch { /* The selected view remains active when storage is unavailable. */ }
-    }
+    if (persist)
+        persistWorkspaceViewToStorage(workspaceView);
 }
 function revealOperationsSection(targetId) {
     applyWorkspaceView("operations");
@@ -1657,38 +3025,6 @@ function renderFingerprint(value) {
         return "";
     }
 }
-const RUNTIME_ICON_PATHS = {
-    folder: ["M3 6h7l2 2h9v10H3V6Z"],
-    monitor: ["M4 5h16v12H4V5Z", "M8 21h8", "M12 17v4"],
-    message: ["M5 5h14v12H9l-4 3V5Z", "M9 9h6", "M9 13h4"],
-    reply: ["m10 8-5 4 5 4", "M5 12h7a6 6 0 0 1 6 6"],
-    edit: ["m4 16-.5 4.5L8 20l10.5-10.5-4-4L4 16Z", "m12.5 7.5 4 4"],
-    trash: ["M4 7h16", "M9 7V4h6v3", "m7 7 1 13h8l1-13", "M10 11v5", "M14 11v5"],
-    copy: ["M8 8h11v11H8V8Z", "M5 16H4V4h12v1"],
-};
-function runtimeIcon(name, className = "") {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("aria-hidden", "true");
-    if (className)
-        svg.setAttribute("class", className);
-    for (const pathData of RUNTIME_ICON_PATHS[name]) {
-        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", pathData);
-        svg.appendChild(path);
-    }
-    return svg;
-}
-function createMessageAction(label, iconName, action, danger = false) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "message-action" + (danger ? " danger" : "");
-    button.title = label;
-    button.setAttribute("aria-label", label);
-    button.appendChild(runtimeIcon(iconName));
-    button.addEventListener("click", action);
-    return button;
-}
 function syncNewMessageIndicator() {
     const visible = collaborationPendingMessages > 0 && !collaborationFollowLatest;
     show("runtime-new-messages", visible);
@@ -1719,255 +3055,36 @@ function announceNewCollaborationMessages(count) {
         : String(count) + " " + (count === 1 ? "new message" : "new messages");
     setText("runtime-message-announcer", label);
 }
-function appendLinkifiedText(parent, text) {
-    const pattern = /https?:\/\/[^\s<>{}\[\]]+/g;
-    let cursor = 0;
-    for (const match of text.matchAll(pattern)) {
-        const index = match.index || 0;
-        if (index > cursor)
-            parent.appendChild(document.createTextNode(text.slice(cursor, index)));
-        let href = match[0];
-        let trailing = "";
-        while (/[.,;:!?)]$/.test(href)) {
-            trailing = href.slice(-1) + trailing;
-            href = href.slice(0, -1);
-        }
-        const link = document.createElement("a");
-        link.href = href;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        link.textContent = href;
-        parent.appendChild(link);
-        if (trailing)
-            parent.appendChild(document.createTextNode(trailing));
-        cursor = index + match[0].length;
-    }
-    if (cursor < text.length)
-        parent.appendChild(document.createTextNode(text.slice(cursor)));
-}
-function messageLineStartsBlock(line) {
-    return /^```/.test(line)
-        || /^#{1,3}\s+/.test(line)
-        || /^>\s?/.test(line)
-        || /^\s*[-*+]\s+/.test(line)
-        || /^\s*\d+[.)]\s+/.test(line);
-}
-function appendMessageParagraph(parent, lines) {
-    if (!lines.length)
-        return;
-    const paragraph = document.createElement("p");
-    paragraph.className = "message-paragraph";
-    lines.forEach((line, index) => {
-        if (index)
-            paragraph.appendChild(document.createElement("br"));
-        appendLinkifiedText(paragraph, line);
-    });
-    parent.appendChild(paragraph);
-}
-function appendMessageCode(parent, language, codeText) {
-    const block = document.createElement("section");
-    block.className = "message-code";
-    const header = document.createElement("header");
-    const label = document.createElement("span");
-    label.textContent = language || "code";
-    const copy = document.createElement("button");
-    copy.type = "button";
-    copy.className = "message-code-copy";
-    copy.appendChild(runtimeIcon("copy"));
-    const copyLabel = document.createElement("span");
-    copyLabel.textContent = tr("Copy code");
-    copy.appendChild(copyLabel);
-    copy.title = tr("Copy code");
-    copy.setAttribute("aria-label", tr("Copy code"));
-    copy.addEventListener("click", async () => {
-        try {
-            await navigator.clipboard.writeText(codeText);
-            copyLabel.textContent = tr("Code copied");
-            setText("runtime-message-announcer", tr("Code copied"));
-            window.setTimeout(() => { copyLabel.textContent = tr("Copy code"); }, 1400);
-        }
-        catch {
-            copyLabel.textContent = tr("Unable to copy code");
-            setText("runtime-message-announcer", tr("Unable to copy code"));
-            window.setTimeout(() => { copyLabel.textContent = tr("Copy code"); }, 1800);
-        }
-    });
-    header.appendChild(label);
-    header.appendChild(copy);
-    const pre = document.createElement("pre");
-    const code = document.createElement("code");
-    if (language)
-        code.dataset.language = language;
-    code.textContent = codeText;
-    pre.appendChild(code);
-    block.appendChild(header);
-    block.appendChild(pre);
-    parent.appendChild(block);
-}
-function appendRichMessage(bubble, sourceValue) {
-    const source = String(sourceValue || "").replace(/\r\n?/g, "\n");
-    const lines = source.split("\n");
-    const body = document.createElement("div");
-    body.className = "message-body";
-    let index = 0;
-    while (index < lines.length) {
-        const line = lines[index];
-        if (!line.trim()) {
-            index += 1;
-            continue;
-        }
-        const fence = /^```\s*([^\s`]*)/.exec(line);
-        if (fence) {
-            const codeLines = [];
-            index += 1;
-            while (index < lines.length && !/^```\s*$/.test(lines[index])) {
-                codeLines.push(lines[index]);
-                index += 1;
-            }
-            if (index < lines.length)
-                index += 1;
-            appendMessageCode(body, fence[1] || "", codeLines.join("\n"));
-            continue;
-        }
-        const heading = /^(#{1,3})\s+(.+)$/.exec(line);
-        if (heading) {
-            const title = document.createElement(heading[1].length === 1 ? "h3" : heading[1].length === 2 ? "h4" : "h5");
-            title.className = "message-heading";
-            appendLinkifiedText(title, heading[2]);
-            body.appendChild(title);
-            index += 1;
-            continue;
-        }
-        if (/^>\s?/.test(line)) {
-            const quote = document.createElement("blockquote");
-            const quoteLines = [];
-            while (index < lines.length && /^>\s?/.test(lines[index])) {
-                quoteLines.push(lines[index].replace(/^>\s?/, ""));
-                index += 1;
-            }
-            appendMessageParagraph(quote, quoteLines);
-            body.appendChild(quote);
-            continue;
-        }
-        const unordered = /^\s*[-*+]\s+/.test(line);
-        const ordered = /^\s*\d+[.)]\s+/.test(line);
-        if (unordered || ordered) {
-            const list = document.createElement(ordered ? "ol" : "ul");
-            const pattern = ordered ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/;
-            while (index < lines.length && pattern.test(lines[index])) {
-                const item = document.createElement("li");
-                appendLinkifiedText(item, lines[index].replace(pattern, ""));
-                list.appendChild(item);
-                index += 1;
-            }
-            body.appendChild(list);
-            continue;
-        }
-        const paragraphLines = [];
-        while (index < lines.length && lines[index].trim() && !messageLineStartsBlock(lines[index])) {
-            paragraphLines.push(lines[index]);
-            index += 1;
-        }
-        if (!paragraphLines.length) {
-            paragraphLines.push(line);
-            index += 1;
-        }
-        appendMessageParagraph(body, paragraphLines);
-    }
-    bubble.appendChild(body);
-    if (source.length <= 2200 && lines.length <= 36)
-        return;
-    body.classList.add("is-collapsed");
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "message-expand";
-    toggle.textContent = tr("Show full message");
-    toggle.setAttribute("aria-expanded", "false");
-    toggle.addEventListener("click", () => {
-        const expanded = body.classList.toggle("is-expanded");
-        body.classList.toggle("is-collapsed", !expanded);
-        toggle.textContent = tr(expanded ? "Collapse message" : "Show full message");
-        toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
-    });
-    bubble.appendChild(toggle);
-}
 function loadRememberedRuntimeCredential() {
-    try {
-        return window.sessionStorage.getItem(RUNTIME_CREDENTIAL_SESSION_KEY)?.trim() || "";
-    }
-    catch {
-        return "";
-    }
+    return loadCredentialFromStorage();
 }
 function persistRuntimeCredentialForTab() {
-    try {
-        if (rememberCredentialForTab && token)
-            window.sessionStorage.setItem(RUNTIME_CREDENTIAL_SESSION_KEY, token);
-        else
-            window.sessionStorage.removeItem(RUNTIME_CREDENTIAL_SESSION_KEY);
-    }
-    catch { /* Storage can be unavailable in hardened browser contexts. */ }
+    persistCredentialToStorage(token, rememberCredentialForTab);
 }
 function clearRememberedRuntimeCredential() {
-    try {
-        window.sessionStorage.removeItem(RUNTIME_CREDENTIAL_SESSION_KEY);
-    }
-    catch { /* Storage can be unavailable in hardened browser contexts. */ }
+    clearCredentialFromStorage();
 }
 function currentDraftStorageKey(project = state.selectedProject, sessionId = state.workflow?.selectedSessionId) {
-    const projectId = String(project || "");
-    const workflowSessionId = String(sessionId || "");
-    return projectId && workflowSessionId
-        ? DRAFT_STORAGE_PREFIX + encodeURIComponent(projectId) + "." + encodeURIComponent(workflowSessionId)
-        : "";
+    return draftStorageKey(project, sessionId);
 }
 function saveCurrentDraft() {
-    const key = currentDraftStorageKey();
     const body = el("runtime-message-body");
-    if (!key || !body)
+    if (!body)
         return;
-    try {
-        if (body.value)
-            window.sessionStorage.setItem(key, body.value);
-        else
-            window.sessionStorage.removeItem(key);
-    }
-    catch { /* Draft remains available in the current input when storage is unavailable. */ }
+    saveDraft(state.selectedProject, state.workflow?.selectedSessionId, body.value);
 }
 function restoreCurrentDraft() {
-    const key = currentDraftStorageKey();
     const body = el("runtime-message-body");
-    if (!key || !body)
+    if (!body)
         return;
-    try {
-        body.value = window.sessionStorage.getItem(key) || "";
-    }
-    catch {
-        body.value = "";
-    }
+    body.value = loadDraft(state.selectedProject, state.workflow?.selectedSessionId);
     syncCollaborationComposerLayout();
 }
 function clearCurrentDraft() {
-    const key = currentDraftStorageKey();
-    if (!key)
-        return;
-    try {
-        window.sessionStorage.removeItem(key);
-    }
-    catch { /* No-op in hardened browser contexts. */ }
+    clearDraft(state.selectedProject, state.workflow?.selectedSessionId);
 }
 function clearRuntimeDrafts() {
-    try {
-        const keys = [];
-        for (let index = 0; index < window.sessionStorage.length; index += 1) {
-            const key = window.sessionStorage.key(index);
-            if (key?.startsWith(DRAFT_STORAGE_PREFIX))
-                keys.push(key);
-        }
-        for (const key of keys)
-            window.sessionStorage.removeItem(key);
-    }
-    catch { /* No-op in hardened browser contexts. */ }
+    clearAllRuntimeDrafts();
 }
 function rememberLocalCollaborationMessage(messageId) {
     const id = typeof messageId === "string" ? messageId : "";
@@ -1976,22 +3093,13 @@ function rememberLocalCollaborationMessage(messageId) {
     locallyAuthoredCollaborationMessageIds.add(id);
 }
 function deviceDisclosureStorageKey(clientId) {
-    return DEVICE_DISCLOSURE_STORAGE_PREFIX + encodeURIComponent(clientId);
+    return runnerDisclosureKey(clientId);
 }
 function storedDeviceDisclosure(clientId) {
-    try {
-        const value = window.localStorage.getItem(deviceDisclosureStorageKey(clientId));
-        return value === "open" ? true : value === "closed" ? false : null;
-    }
-    catch {
-        return null;
-    }
+    return loadDeviceDisclosure(clientId);
 }
 function persistDeviceDisclosure(clientId, open) {
-    try {
-        window.localStorage.setItem(deviceDisclosureStorageKey(clientId), open ? "open" : "closed");
-    }
-    catch { /* Disclosure remains active for the current render. */ }
+    saveDeviceDisclosure(clientId, open);
 }
 function revealRunner(clientId) {
     if (!clientId)
@@ -2009,8 +3117,7 @@ function appendChip(parent, text, extraClass = "") {
     return chip;
 }
 function abort(controller) {
-    if (controller)
-        controller.abort();
+    abortController(controller);
 }
 function abortCollaboration() {
     abort(collaborationAbort);
@@ -2041,54 +3148,21 @@ function abortAll() {
     windowDetailAbort = null;
 }
 async function api(path, payload, signal) {
-    try {
-        const response = await fetch(API_BASE + path, {
-            method: "POST",
-            headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-            signal,
-        });
-        let data = null;
-        try {
-            data = await response.json();
-        }
-        catch {
-            data = null;
-        }
-        return { ok: response.ok, status: response.status, data };
-    }
-    catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError")
-            return null;
-        return { ok: false, status: 0, data: null };
-    }
+    apiClient.setToken(token);
+    return apiClient.post(path, payload, signal);
 }
 function windowDateTimeLabel(timestampMs) {
-    const value = Number(timestampMs);
-    if (!Number.isFinite(value) || value <= 0)
-        return tr("time unavailable");
-    return new Date(value).toLocaleString(runtimeLanguage === "zh-CN" ? "zh-CN" : "en");
+    return formatWindowDateTime(timestampMs, runtimeLanguage);
 }
 function windowAgeLabel(timestampMs) {
-    return runtimeWindowActivityLabel(timestampMs, Date.now());
-}
-function runtimeProjectClientId(project) {
-    const value = String(project || "");
-    const parts = value.split(":");
-    return parts.length >= 3 && parts[0] === "agent" ? parts[1] : "";
+    return formatWindowAge(timestampMs, Date.now());
 }
 async function copyRuntimeValue(value, statusId) {
     if (!value)
         return;
-    try {
-        await navigator.clipboard.writeText(value);
-        if (statusId)
-            setText(statusId, tr("Copied"));
-    }
-    catch {
-        if (statusId)
-            setText(statusId, tr("Unable to copy"));
-    }
+    const ok = await writeClipboardText(value);
+    if (statusId)
+        setText(statusId, ok ? tr("Copied") : tr("Unable to copy"));
 }
 function openWindowLinkedSession(session) {
     const project = String(session?.project || "");
@@ -2100,132 +3174,18 @@ function openWindowLinkedSession(session) {
     selectRecentSession({ client_id: clientId, project_id: project, session_id: sessionId });
 }
 function renderWindowActivityRows(node, activities, compact = false) {
-    clearNode(node);
-    if (!node)
-        return;
-    for (const activity of activities) {
-        const item = document.createElement("article");
-        item.className = "window-activity-item" + (compact ? " compact" : "")
-            + (activity?.recorder_gap_session_id ? " recorder-gap" : "");
-        const head = document.createElement("div");
-        head.className = "window-activity-head";
-        const title = document.createElement("strong");
-        title.textContent = String(activity?.tool_name || activity?.method || "WebCodex call");
-        const time = document.createElement("span");
-        time.className = "muted small";
-        time.textContent = windowDateTimeLabel(activity?.started_at_ms);
-        head.appendChild(title);
-        head.appendChild(time);
-        item.appendChild(head);
-        const facts = document.createElement("div");
-        facts.className = "chips window-activity-facts";
-        appendChip(facts, String(activity?.status || "unknown"));
-        if (activity?.project)
-            appendChip(facts, String(activity.project));
-        if (activity?.meaningful)
-            appendChip(facts, "meaningful", "tone-runtime");
-        if (activity?.recorder_gap_session_id)
-            appendChip(facts, "recorder gap", "tone-warn");
-        if (activity?.response_streaming === true) {
-            appendChip(facts, "streaming timing unavailable", "tone-warn");
-        }
-        else if (typeof activity?.service_ms === "number") {
-            appendChip(facts, "service " + String(activity.service_ms) + " ms");
-        }
-        else if (activity?.meaningful) {
-            appendChip(facts, "service unavailable");
-        }
-        if (activity?.meaningful) {
-            if (typeof activity?.next_call_gap_ms === "number") {
-                appendChip(facts, "next gap " + String(activity.next_call_gap_ms) + " ms");
-            }
-            else {
-                appendChip(facts, "next gap unavailable");
-            }
-            if (typeof activity?.cycle_ms === "number") {
-                appendChip(facts, "cycle " + String(activity.cycle_ms) + " ms");
-            }
-        }
-        if (activity?.window_transition_kind === "overlap") {
-            appendChip(facts, "overlap from previous", "tone-warn");
-        }
-        item.appendChild(facts);
-        const links = Array.isArray(activity?.workflow_sessions) ? activity.workflow_sessions : [];
-        if (links.length) {
-            const relation = document.createElement("div");
-            relation.className = "muted small";
-            relation.textContent = links
-                .map((link) => String(link.workflow_session_id || "") + " · " + String(link.relation || "linked"))
-                .join(" · ");
-            item.appendChild(relation);
-        }
-        if (activity?.recorder_gap_session_id) {
-            const gap = document.createElement("div");
-            gap.className = "window-gap-note small";
-            gap.textContent = "Recording was not continued for " + String(activity.recorder_gap_session_id) + ".";
-            item.appendChild(gap);
-        }
-        if (activity?.server_trace_id) {
-            const trace = document.createElement("button");
-            trace.type = "button";
-            trace.className = "window-trace-copy";
-            trace.textContent = "trace " + String(activity.server_trace_id);
-            trace.title = tr("Copy trace id");
-            trace.addEventListener("click", () => void copyRuntimeValue(String(activity.server_trace_id)));
-            item.appendChild(trace);
-        }
-        node.appendChild(item);
-    }
+    renderActivityRowsHelper(node, activities, {
+        compact,
+        language: runtimeLanguage,
+        onCopyTrace: (traceId) => void copyRuntimeValue(traceId),
+    });
 }
 function renderWindowList() {
     const node = el("runtime-window-list");
-    clearNode(node);
     setText("runtime-window-list-count", String(windowRows.length));
     show("runtime-window-list-empty", windowRows.length === 0);
     setText("runtime-window-list-status", windowRows.length ? countLabel(windowRows.length, "Window") : tr("No WebCodex activity"));
-    if (!node)
-        return;
-    for (const row of windowRows) {
-        const key = String(row?.client_window_key || "");
-        if (!key)
-            continue;
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "runtime-window-card" + (key === selectedWindowKey ? " selected" : "");
-        if (key === selectedWindowKey)
-            button.setAttribute("aria-current", "true");
-        const head = document.createElement("div");
-        head.className = "runtime-window-card-head";
-        const title = document.createElement("strong");
-        title.textContent = "Window " + runtimeWindowShortKey(key);
-        const active = document.createElement("span");
-        active.className = "chip" + (Number(row?.active_count || 0) > 0 ? " tone-runtime" : "");
-        active.textContent = Number(row?.active_count || 0) > 0
-            ? String(row.active_count) + " active"
-            : String(row?.source || "window");
-        head.appendChild(title);
-        head.appendChild(active);
-        button.appendChild(head);
-        const call = document.createElement("span");
-        call.className = "muted small";
-        call.textContent = row?.last_tool_call_at_ms
-            ? "Last WebCodex call " + windowAgeLabel(row.last_tool_call_at_ms)
-            : "Last WebCodex activity " + windowAgeLabel(row?.last_seen_at_ms);
-        button.appendChild(call);
-        const meaningful = document.createElement("span");
-        meaningful.className = "muted small";
-        meaningful.textContent = row?.last_meaningful_activity_at_ms
-            ? "Last meaningful work " + windowAgeLabel(row.last_meaningful_activity_at_ms)
-            : "No meaningful WebCodex work recorded";
-        button.appendChild(meaningful);
-        const links = document.createElement("span");
-        links.className = "muted small";
-        links.textContent = countLabel(Number(row?.linked_session_count || 0), "linked Session")
-            + (Number(row?.recorder_gap_count || 0) ? " · " + String(row.recorder_gap_count) + " recorder gap" : "");
-        button.appendChild(links);
-        button.addEventListener("click", () => void selectWindow(key));
-        node.appendChild(button);
-    }
+    renderWindowCards(node, windowRows, selectedWindowKey, (key) => void selectWindow(key));
 }
 function renderWindowDetail(detail) {
     selectedWindowDetail = detail;
@@ -2234,79 +3194,20 @@ function renderWindowDetail(detail) {
     show("runtime-window-detail", present);
     if (!detail)
         return;
-    const key = String(detail.client_window_key || selectedWindowKey || "");
-    setText("runtime-window-title", "Window " + runtimeWindowShortKey(key));
-    setText("runtime-window-key", key || "—");
-    setText("runtime-window-source", String(detail.source || "—"));
-    setText("runtime-window-active-count", String(Number(detail.active_count || 0)));
-    setText("runtime-window-last-call", detail.last_tool_call_at_ms ? windowAgeLabel(detail.last_tool_call_at_ms) : "No completed tools/call activity");
-    setText("runtime-window-last-meaningful", detail.last_meaningful_activity_at_ms
-        ? windowAgeLabel(detail.last_meaningful_activity_at_ms)
-        : "No meaningful WebCodex work recorded");
-    setText("runtime-window-active-status", Number(detail.active_count || 0) ? "Active request" : "No active request");
-    setText("runtime-window-linked-status", countLabel(Number(detail.sessions_returned || 0), "Session") + (detail.sessions_truncated ? " · bounded" : ""));
-    setText("runtime-window-activity-status", countLabel(Number(detail.activity_returned || 0), "event") + (detail.activity_truncated ? " · bounded" : ""));
-    const activeNode = el("runtime-window-active-requests");
-    clearNode(activeNode);
-    const activeRequests = Array.isArray(detail.active_requests) ? detail.active_requests : [];
-    if (activeNode && !activeRequests.length) {
-        const empty = document.createElement("p");
-        empty.className = "muted small";
-        empty.textContent = "No WebCodex request is currently active.";
-        activeNode.appendChild(empty);
-    }
-    for (const request of activeRequests) {
-        const item = document.createElement("article");
-        item.className = "window-request-item";
-        const title = document.createElement("strong");
-        title.textContent = String(request?.tool_name || request?.method || "WebCodex request");
-        item.appendChild(title);
-        const meta = document.createElement("div");
-        meta.className = "muted small";
-        const facts = [
-            request?.project,
-            request?.started_at_ms ? "started " + windowAgeLabel(request.started_at_ms) : null,
-            typeof request?.elapsed_ms === "number" ? String(request.elapsed_ms) + " ms elapsed" : null,
-        ].filter(Boolean).map(String);
-        meta.textContent = facts.join(" · ");
-        item.appendChild(meta);
-        if (request?.server_trace_id) {
-            const trace = document.createElement("button");
-            trace.type = "button";
-            trace.className = "window-trace-copy";
-            trace.textContent = "trace " + String(request.server_trace_id);
-            trace.addEventListener("click", () => void copyRuntimeValue(String(request.server_trace_id)));
-            item.appendChild(trace);
-        }
-        activeNode?.appendChild(item);
-    }
-    const sessionsNode = el("runtime-window-linked-sessions");
-    clearNode(sessionsNode);
-    for (const session of Array.isArray(detail.linked_sessions) ? detail.linked_sessions : []) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "window-session-card";
-        const title = document.createElement("strong");
-        title.textContent = String(session?.title || session?.workflow_session_id || "Workflow Session");
-        const meta = document.createElement("span");
-        meta.className = "muted small";
-        meta.textContent = [
-            session?.workflow_session_id,
-            session?.lifecycle,
-            session?.project,
-            ...(Array.isArray(session?.relations) ? session.relations : []),
-        ].filter(Boolean).map(String).join(" · ");
-        button.appendChild(title);
-        button.appendChild(meta);
-        button.addEventListener("click", () => openWindowLinkedSession(session));
-        sessionsNode?.appendChild(button);
-    }
-    if (sessionsNode && !sessionsNode.childElementCount) {
-        const empty = document.createElement("p");
-        empty.className = "muted small";
-        empty.textContent = "No authorized Workflow Session links.";
-        sessionsNode.appendChild(empty);
-    }
+    const fields = formatWindowDetailFields(detail, selectedWindowKey, Date.now(), runtimeLanguage);
+    if (!fields)
+        return;
+    setText("runtime-window-title", fields.title);
+    setText("runtime-window-key", fields.key);
+    setText("runtime-window-source", fields.source);
+    setText("runtime-window-active-count", fields.activeCount);
+    setText("runtime-window-last-call", fields.lastCall);
+    setText("runtime-window-last-meaningful", fields.lastMeaningful);
+    setText("runtime-window-active-status", fields.activeStatus);
+    setText("runtime-window-linked-status", fields.linkedStatus);
+    setText("runtime-window-activity-status", fields.activityStatus);
+    renderWindowActiveRequests(el("runtime-window-active-requests"), Array.isArray(detail.active_requests) ? detail.active_requests : [], { onCopyTrace: (traceId) => void copyRuntimeValue(traceId) });
+    renderWindowLinkedSessions(el("runtime-window-linked-sessions"), Array.isArray(detail.linked_sessions) ? detail.linked_sessions : [], (session) => openWindowLinkedSession(session));
     renderWindowActivityRows(el("runtime-window-activity"), Array.isArray(detail.activity) ? detail.activity : []);
     renderWorkspaceHeading();
 }
@@ -2390,37 +3291,13 @@ function renderSessionWindowCorrelation(detail) {
     clearNode(linkedNode);
     const links = available && Array.isArray(detail?.linked_windows) ? detail.linked_windows : [];
     setText("runtime-linked-windows-status", available ? countLabel(links.length, "Window") : "runtime:read unavailable");
-    for (const link of links) {
-        const key = String(link?.client_window_key || "");
-        if (!key)
-            continue;
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "window-session-card" + (Number(link?.recorder_gap_count || 0) ? " recorder-gap" : "");
-        const title = document.createElement("strong");
-        title.textContent = "Window " + runtimeWindowShortKey(key);
-        const meta = document.createElement("span");
-        meta.className = "muted small";
-        meta.textContent = [
-            link?.source,
-            link?.last_seen_at_ms ? "last WebCodex activity " + windowAgeLabel(link.last_seen_at_ms) : null,
-            Number(link?.recorder_gap_count || 0) ? String(link.recorder_gap_count) + " recorder gap" : null,
-        ].filter(Boolean).map(String).join(" · ");
-        button.appendChild(title);
-        button.appendChild(meta);
-        button.addEventListener("click", () => {
+    if (available) {
+        renderSessionWindowCorrelationLinks(linkedNode, links, (key) => {
             selectedWindowKey = key;
             applyWorkspaceView("windows");
             renderWindowList();
             void refreshWindowDetail();
         });
-        linkedNode?.appendChild(button);
-    }
-    if (available && linkedNode && !links.length) {
-        const empty = document.createElement("p");
-        empty.className = "muted small";
-        empty.textContent = "No linked Window evidence.";
-        linkedNode.appendChild(empty);
     }
     const gaps = available && Array.isArray(detail?.window_activity_after_last_session_record)
         ? detail.window_activity_after_last_session_record
@@ -2552,41 +3429,27 @@ function showError(message) {
     show("runtime-error", !!message);
 }
 function countLabel(value, singular, plural = singular + "s") {
-    const count = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
-    if (runtimeLanguage === "zh-CN")
-        return count + " " + (ZH_COUNT_LABELS[singular] || RUNTIME_ZH_TEXT[singular] || singular);
-    return count + " " + (count === 1 ? singular : plural);
+    return localizedCountLabel(value, singular, plural, runtimeLanguage);
 }
 function pendingAttentionCount(attention) {
-    return ["open_risks", "open_todos", "open_questions", "open_guidance"]
-        .reduce((total, key) => total + (typeof attention?.[key] === "number" ? Math.max(0, Math.floor(attention[key])) : 0), 0);
+    return countPendingAttention(attention);
 }
 function attentionLabel(attention) {
-    const parts = [];
-    for (const [key, singular] of [["open_risks", "risk"], ["open_todos", "todo"], ["open_questions", "question"], ["open_guidance", "guidance"]]) {
-        const count = typeof attention?.[key] === "number" ? attention[key] : 0;
-        if (count)
-            parts.push(countLabel(count, singular));
-    }
-    return parts.length ? parts.join(" · ") : tr("No retained pending attention");
+    return formatAttentionLabel(attention, runtimeLanguage);
 }
 function renderRuntimeOverviewMetrics(data) {
-    if (!data)
+    const metrics = formatRuntimeOverviewMetrics(data, runtimeLanguage);
+    if (!metrics)
         return;
-    setText("runtime-server-identity", [data.service, data.version].filter(Boolean).join(" · "));
-    setText("runtime-server-build", data.build_git_commit
-        ? (runtimeLanguage === "zh-CN" ? "构建 " : "build ") + data.build_git_commit + (data.build_git_dirty ? (runtimeLanguage === "zh-CN" ? " · 有未提交更改" : " · dirty") : "")
-        : tr("build unavailable"));
-    setText("runtime-server-runners", countLabel(data.runner_count, "Runner"));
-    setText("runtime-server-alignment", countLabel(data.runners_online, "online") + " · " + countLabel(data.runners_stale, "stale") + " · " + countLabel(data.runners_unavailable, "unavailable"));
-    setText("runtime-server-projects", data.projects_available ? countLabel(data.visible_projects, "visible Project") + (data.projects_truncated ? (runtimeLanguage === "zh-CN" ? " · 不完整" : " · partial") : "") : tr("project:read unavailable"));
-    setText("runtime-server-jobs", countLabel(data.active_jobs, "active Job") + (data.mixed_builds_present ? (runtimeLanguage === "zh-CN" ? " · 存在混合构建" : " · mixed builds") : ""));
-    setText("runtime-server-attention", attentionLabel(data.workflow_sessions));
-    setText("runtime-server-sessions", countLabel(data.workflow_sessions?.active, "active Session") + " · " + countLabel(data.workflow_sessions?.running, "running Session") + (data.workflow_sessions?.truncated ? (runtimeLanguage === "zh-CN" ? " · 有界汇总" : " · bounded aggregate") : ""));
-    const recentMeta = data.recent_sessions || {};
-    setText("runtime-recent-status", countLabel(recentMeta.returned, "Session") +
-        (recentMeta.truncated ? (runtimeLanguage === "zh-CN" ? " · 前 " : " · top ") + String(recentMeta.returned || 0) : "") +
-        (recentMeta.scan_truncated ? (runtimeLanguage === "zh-CN" ? " · 扫描不完整" : " · partial scan") : ""));
+    setText("runtime-server-identity", metrics.identity);
+    setText("runtime-server-build", metrics.build);
+    setText("runtime-server-runners", metrics.runners);
+    setText("runtime-server-alignment", metrics.alignment);
+    setText("runtime-server-projects", metrics.projects);
+    setText("runtime-server-jobs", metrics.jobs);
+    setText("runtime-server-attention", metrics.attention);
+    setText("runtime-server-sessions", metrics.sessions);
+    setText("runtime-recent-status", metrics.recentStatus);
 }
 async function fetchOverview(request) {
     abort(overviewAbort);
@@ -2646,11 +3509,7 @@ async function fetchOverview(request) {
     return true;
 }
 function projectLabel(project) {
-    const name = project && project.name ? String(project.name) : "";
-    const id = project && project.id ? String(project.id) : "";
-    const identity = name && name !== id ? name + " — " + id : id;
-    const status = project && project.connected ? String(project.agent_status || "online") : "offline";
-    return identity + " · " + status;
+    return formatProjectLabel(project);
 }
 async function fetchProjects(request, unlocking = false) {
     const priorSelectedProject = selectedProjectRow();
@@ -2738,29 +3597,10 @@ async function fetchProjects(request, unlocking = false) {
     return true;
 }
 function effectiveProjects(projects) {
-    const aggregates = new Map();
-    for (const row of homeProjectRows) {
-        if (row && typeof row.id === "string")
-            aggregates.set(row.id, row);
-    }
-    return (Array.isArray(projects) ? projects : []).map((project) => {
-        const aggregate = aggregates.get(String(project?.id || ""));
-        return aggregate ? { ...project, sessions: aggregate.sessions } : project;
-    });
+    return mergeEffectiveProjects(projects, homeProjectRows);
 }
 function projectSelectorDevices(projects) {
-    const devices = new Set(knownProjectDevices);
-    for (const device of runtimeDeviceIds(projects))
-        devices.add(device);
-    for (const runner of runnerRows) {
-        const clientId = typeof runner?.client_id === "string" ? runner.client_id : "";
-        if (clientId)
-            devices.add(clientId);
-    }
-    const selectedDevice = String(state.selectedDevice || "");
-    if (selectedDevice)
-        devices.add(selectedDevice);
-    return Array.from(devices).sort((left, right) => left.localeCompare(right));
+    return extractProjectSelectorDevices(projects, knownProjectDevices, runnerRows, String(state.selectedDevice || ""));
 }
 function selectedProjectRow() {
     const selected = String(state.selectedProject || "");
@@ -2785,25 +3625,11 @@ function renderSelectedProjectIdentity() {
         setText("runtime-selected-project", runtimeProjectIdentityText(project));
         return;
     }
-    if (!project || typeof project.id !== "string" || !project.id) {
-        setText("runtime-selected-project", tr("No project selected"));
-        return;
-    }
-    const runner = typeof project.client_id === "string" && project.client_id ? project.client_id : tr("unknown");
-    const path = typeof project.path === "string" && project.path ? project.path : "不可用";
-    setText("runtime-selected-project", "运行器：" + runner + " · 项目：" + project.id + " · 工作空间：" + path);
+    setText("runtime-selected-project", formatProjectIdentity(project, runtimeLanguage));
 }
 function renderSessionWorkspaceIdentity() {
     const project = selectedProjectRow();
-    if (runtimeLanguage !== "zh-CN")
-        setText("runtime-session-workspace", runtimeProjectIdentityText(project));
-    else if (!project || typeof project.id !== "string" || !project.id)
-        setText("runtime-session-workspace", tr("No project selected"));
-    else {
-        const runner = typeof project.client_id === "string" && project.client_id ? project.client_id : tr("unknown");
-        const path = typeof project.path === "string" && project.path ? project.path : "不可用";
-        setText("runtime-session-workspace", "运行器：" + runner + " · 项目：" + project.id + " · 工作空间：" + path);
-    }
+    setText("runtime-session-workspace", formatProjectIdentity(project, runtimeLanguage));
 }
 function revealWorkflowSessionDetail() {
     const panel = el("runtime-workflow-sessions-panel");
@@ -3062,9 +3888,7 @@ function applyRunnerFilter(device) {
         void fetchProjects(refreshRuntimeProjects(state, projectSearch, projectDeviceFilter));
 }
 function runnerAttentionCount(runner) {
-    const attention = runner?.sessions?.attention;
-    return ["open_guidance", "open_questions", "open_risks", "open_todos"]
-        .reduce((total, key) => total + (typeof attention?.[key] === "number" ? Math.max(0, attention[key]) : 0), 0);
+    return calculateRunnerAttention(runner);
 }
 function renderRunnerFleet(runners) {
     const node = el("runtime-runner-list");
@@ -3306,130 +4130,28 @@ async function fetchSessions(request) {
     }
 }
 function updatedLabel(timestamp) {
-    if (typeof timestamp !== "number")
-        return tr("time unavailable");
-    return new Date(timestamp * 1000).toLocaleTimeString(runtimeLanguage === "zh-CN" ? "zh-CN" : "en");
+    return formatUpdatedTime(timestamp, runtimeLanguage);
 }
 function dateTimeLabel(timestamp) {
-    if (typeof timestamp !== "number")
-        return tr("time unavailable");
-    return new Date(timestamp * 1000).toLocaleString(runtimeLanguage === "zh-CN" ? "zh-CN" : "en");
+    return formatSessionDateTime(timestamp, runtimeLanguage);
 }
 function localizedLivenessPresentation(session) {
-    const presentation = workflowSessionLivenessPresentation(session);
-    if (runtimeLanguage !== "zh-CN")
-        return presentation;
-    let label = tr(String(presentation.label || "idle"));
-    if (presentation.state === "idle" && String(presentation.label || "").startsWith("idle · ")) {
-        label = tr("idle") + " · " + String(presentation.label).slice("idle · ".length);
-    }
-    return { ...presentation, label, tooltip: tr(String(presentation.tooltip || "")) };
+    return formatLivenessPresentation(session, runtimeLanguage);
 }
 function localizedWorkflowText(value) {
-    const source = String(value || "");
-    if (runtimeLanguage !== "zh-CN" || !source)
-        return source;
-    const exact = {
-        "Latest retained validation passed": "最近保留的验证已通过",
-        "Latest validation passed": "最近验证已通过",
-        "Latest retained validation failed": "最近保留的验证失败",
-        "Latest validation failed": "最近验证失败",
-        "Validation not run": "尚未运行验证",
-        "Retained terminal validation evidence unavailable": "保留的最终验证证据不可用",
-        "Terminal validation evidence unavailable": "最终验证证据不可用",
-        "No work observations in retained events.": "保留事件中没有工作观察记录。",
-        "No tool activity observed.": "尚未观察到工具活动。",
-        "No retained open guidance, questions, risks, or todos.": "没有保留的开放指导、问题、风险或待办。",
-        "No retained model-reported progress.": "没有保留的模型报告进度。",
-    };
-    let text = exact[source] || source;
-    const prefixes = [
-        ["Recent observed work: ", "最近观察到的工作："],
-        ["Observed work: ", "已观察工作："],
-        ["Retained open messages: ", "保留的开放消息："],
-        ["Retained: ", "保留："],
-        ["Recent ", "最近 "],
-        ["latest ", "最近 "],
-    ];
-    for (const [english, chinese] of prefixes) {
-        if (text.startsWith(english)) {
-            text = chinese + text.slice(english.length);
-            break;
-        }
-    }
-    const nounMap = {
-        edit: "次编辑", edits: "次编辑", validation: "次验证", validations: "次验证",
-        exploration: "次探索", review: "次审查", reviews: "次审查", run: "次运行", runs: "次运行",
-        risk: "个风险", risks: "个风险", todo: "个待办", todos: "个待办",
-        question: "个问题", questions: "个问题", guidance: "条指导",
-        test: "次测试", tests: "次测试", "unresolved failure": "个未解决失败",
-        "unresolved failures": "个未解决失败", "unresolved validation failure": "个未解决的验证失败",
-        "unresolved validation failures": "个未解决的验证失败",
-    };
-    return text.replace(/(\d+) (unresolved validation failures?|unresolved failures?|edits?|validations?|exploration|reviews?|runs?|risks?|todos?|questions?|guidance|tests?)/g, (_match, count, noun) => {
-        return String(count) + " " + (nounMap[String(noun)] || noun);
-    });
+    return translateWorkflowText(value, runtimeLanguage);
 }
 function activityKindLabel(activity) {
-    const kind = String(activity && activity.kind || "Activity");
-    if (activity && activity.job_handoff) {
-        if (kind === "Tested")
-            return runtimeLanguage === "zh-CN" ? "测试" : "Test";
-        if (kind === "Ran")
-            return runtimeLanguage === "zh-CN" ? "命令" : "Command";
-    }
-    if (kind === "Explored" && activity && typeof activity.group_count === "number")
-        return (runtimeLanguage === "zh-CN" ? "探索 ×" : "Explored ×") + activity.group_count;
-    if (runtimeLanguage !== "zh-CN")
-        return kind;
-    return { Activity: "活动", Progress: "进度", Explored: "探索", Edited: "编辑", Tested: "测试", Ran: "运行", Reviewed: "审查" }[kind] || kind;
+    return formatActivityKind(activity, runtimeLanguage);
 }
 function activityFacts(activity, includeTiming) {
-    const facts = [];
-    if (activity && typeof activity.group_count === "number") {
-        if (Array.isArray(activity.group_kinds) && activity.group_kinds.length)
-            facts.push(activity.group_kinds.map(String).join(" / "));
-        if (Array.isArray(activity.group_tools) && activity.group_tools.length)
-            facts.push(activity.group_tools.map(String).join(", "));
-    }
-    else if (activity && activity.tool)
-        facts.push(String(activity.tool));
-    if (activity && activity.kind === "Progress")
-        facts.push(runtimeLanguage === "zh-CN" ? "仅供参考" : "informational");
-    else if (activity && activity.job_handoff) {
-        facts.push(runtimeLanguage === "zh-CN" ? "已移交" : "handed off");
-        if (activity.execution_state)
-            facts.push((runtimeLanguage === "zh-CN" ? "执行 " : "execution ") + tr(String(activity.execution_state)));
-    }
-    else if (activity && activity.state)
-        facts.push(String(activity.state));
-    if (activity && activity.job_id)
-        facts.push("job " + String(activity.job_id));
-    if (includeTiming && activity && typeof activity.started_at === "number")
-        facts.push(new Date(activity.started_at * 1000).toLocaleTimeString(runtimeLanguage === "zh-CN" ? "zh-CN" : "en"));
-    return facts;
+    return formatActivityFacts(activity, includeTiming, runtimeLanguage);
 }
 function activityDescription(activity) {
-    if (!activity)
-        return "";
-    const parts = [activityKindLabel(activity), ...activityFacts(activity, false)];
-    if (activity.summary && !activity.job_handoff)
-        parts.push(String(activity.summary));
-    return parts.join(" · ");
+    return formatActivityDescription(activity, runtimeLanguage);
 }
 function appendPreview(parent, label, activity) {
-    if (!activity)
-        return;
-    const row = document.createElement("div");
-    row.className = "activity-preview muted small";
-    const prefix = document.createElement("span");
-    prefix.className = "activity-preview-label";
-    prefix.textContent = label;
-    const text = document.createElement("span");
-    text.textContent = activityDescription(activity);
-    row.appendChild(prefix);
-    row.appendChild(text);
-    parent.appendChild(row);
+    appendActivityPreview(parent, label, activity, runtimeLanguage);
 }
 function renderSessionList(sessions, payload) {
     const node = el("runtime-session-list");
@@ -3576,42 +4298,10 @@ function renderDetail(detail, consumeCollaborationNotice = true) {
     const activities = Array.isArray(detail.activity) ? detail.activity : [];
     const node = el("runtime-timeline");
     const previousScrollTop = node ? node.scrollTop : 0;
-    clearNode(node);
     show("runtime-timeline-empty", activities.length === 0);
+    renderTimelineEvents(node, activities, runtimeLanguage);
     if (!node)
         return syncFollowUi();
-    for (const activity of activities) {
-        const item = document.createElement("li");
-        item.className = "timeline-event";
-        if (activity && activity.kind === "Progress")
-            item.classList.add("reported-progress");
-        if (activity && ["failed", "timed_out"].includes(String(activity.state || "")))
-            item.classList.add("failed");
-        const head = document.createElement("div");
-        head.className = "timeline-head";
-        const kind = document.createElement("span");
-        kind.className = "timeline-kind";
-        kind.textContent = activityKindLabel(activity);
-        const meta = document.createElement("span");
-        meta.className = "muted small";
-        meta.textContent = activityFacts(activity, true).join(" · ");
-        head.appendChild(kind);
-        head.appendChild(meta);
-        item.appendChild(head);
-        if (activity && activity.summary) {
-            const body = document.createElement("div");
-            body.className = "timeline-body small";
-            body.textContent = String(activity.summary);
-            item.appendChild(body);
-        }
-        if (activity && Array.isArray(activity.paths) && activity.paths.length) {
-            const paths = document.createElement("div");
-            paths.className = "muted small";
-            paths.textContent = activity.paths.map(String).join(" · ");
-            item.appendChild(paths);
-        }
-        node.appendChild(item);
-    }
     node.scrollTop = workflowSessionScrollTopAfterRender(state.workflow, previousScrollTop, node.clientHeight, node.scrollHeight);
     syncFollowUi();
 }
@@ -4478,23 +5168,8 @@ async function postHumanCollaborationMessage(event) {
     setText("runtime-message-send-status", tr("Sent."));
     renderCollaboration();
 }
-function operationKey(prefix) {
-    const random = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
-    return prefix + "-" + random;
-}
 function communicationTimeLabel(value) {
-    if (typeof value !== "number" || !Number.isFinite(value))
-        return tr("time unavailable");
-    return new Date(value).toLocaleString(runtimeLanguage === "zh-CN" ? "zh-CN" : "en");
-}
-function parseAgentIds(value) {
-    const ids = value
-        .split(/[\s,]+/)
-        .map((item) => item.trim())
-        .filter(Boolean);
-    return Array.from(new Set(ids));
+    return formatCommunicationTime(value, runtimeLanguage);
 }
 function communicationAgent(agentId) {
     return communicationAgents.find((agent) => String(agent?.agent_id || "") === agentId) || null;
@@ -4510,11 +5185,6 @@ function communicationEndpoint(agentId = selectedCommunicationAgentId) {
 }
 function communicationEndpointId(agentId = selectedCommunicationAgentId) {
     return communicationEndpoint(agentId)?.endpoint_id || "";
-}
-function idempotencyKeyFor(pending, fingerprint, prefix) {
-    return pending && pending.fingerprint === fingerprint
-        ? pending
-        : { fingerprint, key: operationKey(prefix) };
 }
 function resetCommunicationSurface() {
     communicationGeneration += 1;
@@ -4563,51 +5233,15 @@ function renderCommunicationAvailability() {
     const available = communicationReadAvailable !== false;
     show("runtime-communication-unavailable", !available);
     show("runtime-communication-surface", available);
-    const access = communicationReadAvailable === null
-        ? (runtimeLanguage === "zh-CN" ? "正在检查 communication:read…" : "communication:read checking…")
-        : available
-            ? "communication:read" + (communicationManageAvailable === false
-                ? (runtimeLanguage === "zh-CN" ? " · 只读" : " · read only")
-                : (runtimeLanguage === "zh-CN" ? " · 当前视图每 30 秒刷新 · 端点租约每 30 秒续期" : " · 30s refresh while visible · 30s endpoint lease renewal"))
-            : (runtimeLanguage === "zh-CN" ? "communication:read 不可用" : "communication:read unavailable");
-    setText("runtime-communication-status", access);
+    setText("runtime-communication-status", formatCommunicationAvailability(communicationReadAvailable, communicationManageAvailable, runtimeLanguage));
 }
 function renderCommunicationAgents() {
     setText("runtime-communication-count", countLabel(communicationAgents.length, "Agent"));
     const list = el("runtime-agent-list");
-    clearNode(list);
     show("runtime-agent-empty", communicationReadAvailable === true && communicationAgents.length === 0);
-    if (!list)
-        return;
-    for (const agent of communicationAgents) {
-        const agentId = String(agent?.agent_id || "");
-        if (!agentId)
-            continue;
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "communication-row" + (agentId === selectedCommunicationAgentId ? " selected" : "");
-        if (agentId === selectedCommunicationAgentId)
-            row.setAttribute("aria-current", "true");
-        const head = document.createElement("div");
-        head.className = "communication-row-head";
-        const title = document.createElement("span");
-        title.className = "communication-row-title";
-        title.textContent = String(agent?.display_name || agent?.handle || "Agent") + " · @" + String(agent?.handle || "agent");
-        const unread = document.createElement("span");
-        unread.className = "chip" + (Number(agent?.queued_delivery_count || 0) > 0 ? " tone-warn" : "");
-        unread.textContent = countLabel(agent?.queued_delivery_count, "queued delivery");
-        head.appendChild(title);
-        head.appendChild(unread);
-        row.appendChild(head);
-        const meta = document.createElement("span");
-        meta.className = "communication-row-meta";
-        meta.textContent = agentId
-            + (runtimeLanguage === "zh-CN" ? " · 配置版本 r" : " · profile r") + String(agent?.profile_revision || 0)
-            + (runtimeLanguage === "zh-CN" ? " · 控制器 g" : " · controller g") + String(agent?.current_controller_generation || 0)
-            + " · " + countLabel(agent?.active_endpoint_count, "active Endpoint")
-            + " · " + countLabel(agent?.unresolved_wake_count, "unresolved Wake");
-        row.appendChild(meta);
-        row.addEventListener("click", () => {
+    renderAgentRows(list, communicationAgents, selectedCommunicationAgentId, {
+        language: runtimeLanguage,
+        onSelect: (agentId) => {
             selectedCommunicationAgentId = agentId;
             communicationInbox = [];
             const participants = el("runtime-conversation-agent-ids");
@@ -4618,9 +5252,8 @@ function renderCommunicationAgents() {
             renderCommunicationInbox();
             if (communicationEndpointId(agentId))
                 void fetchCommunicationInbox(communicationGeneration);
-        });
-        list.appendChild(row);
-    }
+        },
+    });
 }
 function renderCommunicationAgentCard() {
     const agent = selectedCommunicationAgent();
@@ -4631,9 +5264,7 @@ function renderCommunicationAgentCard() {
     setText("runtime-agent-card-name", String(agent.display_name || agent.handle || tr("Agent Card")) + " · @" + String(agent.handle || "agent"));
     setText("runtime-agent-card-id", agentId);
     setText("runtime-agent-card-description", String(agent.description || tr("No description.")));
-    setText("runtime-agent-card-revision", (runtimeLanguage === "zh-CN" ? "配置版本 " : "Profile revision ") + String(agent.profile_revision || 0)
-        + (runtimeLanguage === "zh-CN" ? " · 控制器代数 " : " · controller generation ") + String(agent.current_controller_generation || 0)
-        + (runtimeLanguage === "zh-CN" ? " · 更新于 " : " · updated ") + communicationTimeLabel(agent.updated_at_unix_ms));
+    setText("runtime-agent-card-revision", formatAgentCardRevision(agent, runtimeLanguage));
     setText("runtime-agent-unread", countLabel(agent.queued_delivery_count, "queued"));
     const labels = el("runtime-agent-card-labels");
     clearNode(labels);
@@ -4642,11 +5273,7 @@ function renderCommunicationAgentCard() {
             appendChip(labels, String(label));
         }
     }
-    const unresolvedWakeCount = Number(agent.unresolved_wake_count || 0);
-    const latestWakeState = String(agent.latest_wake_state || "none");
-    setText("runtime-agent-wake-status", countLabel(unresolvedWakeCount, "unresolved Wake")
-        + (runtimeLanguage === "zh-CN" ? " · 最近状态 " : " · latest ") + tr(latestWakeState)
-        + (runtimeLanguage === "zh-CN" ? " · 收件箱投递与唤醒消费彼此独立" : " · Inbox Delivery and Wake consumption remain independent"));
+    setText("runtime-agent-wake-status", formatAgentWakeStatus(agent, runtimeLanguage));
     const updateForm = el("runtime-agent-update-form");
     const revision = String(agent.profile_revision || 0);
     if (updateForm && (updateForm.dataset.agentId !== agentId
@@ -4671,62 +5298,26 @@ function renderCommunicationAgentCard() {
         setText("runtime-agent-update-status", "");
     }
     const endpoint = communicationEndpoint(agentId);
-    setText("runtime-agent-endpoint-status", endpoint
-        ? (runtimeLanguage === "zh-CN" ? "浏览器端点 " : "Browser Endpoint ") + endpoint.endpoint_id
-            + " · " + tr(endpoint.lifecycle)
-            + (runtimeLanguage === "zh-CN" ? " · 代数 " : " · generation ") + String(endpoint.controller_generation)
-            + (runtimeLanguage === "zh-CN" ? " · 租约至 " : " · lease ") + communicationTimeLabel(endpoint.lease_expires_at_unix_ms)
-            + (runtimeLanguage === "zh-CN" ? " · 运行控制台适配器：仅轮询（运行时可唤醒：" : " · Runtime Console adapter: polling only (runtime wake capable: ")
-            + String(endpoint.wake_capable) + ")"
-        : (runtimeLanguage === "zh-CN"
-            ? "此窗口尚未作为该 Agent。Agent 卡片、对话、收件箱投递和唤醒意图仍会持久保留。"
-            : "This window is not acting as the Agent. Agent Card, Conversations, Inbox deliveries, and Wake Intents remain durable."));
+    setText("runtime-agent-endpoint-status", formatAgentEndpointStatus(endpoint, runtimeLanguage));
     show("runtime-agent-attach", !endpoint);
     show("runtime-agent-detach", !!endpoint);
 }
 function renderCommunicationConversations() {
     const list = el("runtime-conversation-list");
-    clearNode(list);
     show("runtime-conversation-empty", communicationReadAvailable === true && communicationConversations.length === 0);
-    if (!list)
-        return;
-    for (const conversation of communicationConversations) {
-        const conversationId = String(conversation?.conversation_id || "");
-        if (!conversationId)
-            continue;
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "communication-row" + (conversationId === selectedCommunicationConversationId ? " selected" : "");
-        if (conversationId === selectedCommunicationConversationId)
-            row.setAttribute("aria-current", "true");
-        const head = document.createElement("div");
-        head.className = "communication-row-head";
-        const title = document.createElement("span");
-        title.className = "communication-row-title";
-        title.textContent = String(conversation?.title || tr("Untitled Conversation"));
-        const count = document.createElement("span");
-        count.className = "chip";
-        count.textContent = countLabel(conversation?.message_count, "message");
-        head.appendChild(title);
-        head.appendChild(count);
-        row.appendChild(head);
-        const meta = document.createElement("span");
-        meta.className = "communication-row-meta";
-        meta.textContent = conversationId + " · " + countLabel(conversation?.participant_count, "participant") + (runtimeLanguage === "zh-CN" ? " · 序号 " : " · seq ") + String(conversation?.last_seq || 0);
-        row.appendChild(meta);
-        row.addEventListener("click", () => {
+    renderConversationRows(list, communicationConversations, selectedCommunicationConversationId, {
+        language: runtimeLanguage,
+        onSelect: (conversationId) => {
             selectedCommunicationConversationId = conversationId;
             communicationDetail = null;
             renderCommunicationConversations();
             renderCommunicationConversation();
             void fetchCommunicationConversation(communicationGeneration);
-        });
-        list.appendChild(row);
-    }
+        },
+    });
 }
 function deliveryAgentLabel(agentId) {
-    const agent = communicationAgent(agentId);
-    return agent ? String(agent.display_name || agent.handle || agentId) : agentId;
+    return formatDeliveryAgent(agentId, communicationAgents);
 }
 function renderCommunicationConversation() {
     const detail = communicationDetail;
@@ -4741,7 +5332,7 @@ function renderCommunicationConversation() {
         return;
     setText("runtime-conversation-name", String(summary.title || tr("Untitled Conversation")));
     setText("runtime-conversation-id", String(summary.conversation_id || ""));
-    setText("runtime-conversation-seq", (runtimeLanguage === "zh-CN" ? "序号 " : "seq ") + String(summary.last_seq || 0) + " · " + countLabel(summary.message_count, "message") + ((Number(detail?.after_seq || 0) > 0 || detail.truncated) ? (runtimeLanguage === "zh-CN" ? " · 最近有界页面" : " · recent bounded page") : ""));
+    setText("runtime-conversation-seq", formatConversationSeq(summary, detail, runtimeLanguage));
     const participants = el("runtime-conversation-participants");
     if (participants) {
         for (const participant of Array.isArray(detail.participants) ? detail.participants : []) {
@@ -4754,61 +5345,22 @@ function renderCommunicationConversation() {
     }
     const messages = Array.isArray(detail.messages) ? detail.messages : [];
     show("runtime-conversation-transcript-empty", messages.length === 0);
-    if (!transcript)
-        return;
-    for (const message of messages) {
-        const author = message?.author || {};
-        const agentAuthored = String(author.participant_kind || "") === "agent";
-        const card = document.createElement("article");
-        card.className = "conversation-message" + (agentAuthored ? " agent-authored" : "");
-        const head = document.createElement("div");
-        head.className = "conversation-message-head";
-        const name = document.createElement("span");
-        name.className = "conversation-message-author";
-        name.textContent = agentAuthored
-            ? "Agent · " + String(author.display_name || author.handle || author.agent_id || tr("unknown"))
-            : (runtimeLanguage === "zh-CN" ? "人工 · " : "Human · ") + String(author.principal_kind || (runtimeLanguage === "zh-CN" ? "凭证主体" : "credential principal"));
-        const seq = document.createElement("span");
-        seq.className = "muted small";
-        seq.textContent = "#" + String(message?.seq || 0) + " · " + communicationTimeLabel(message?.created_at_unix_ms);
-        head.appendChild(name);
-        head.appendChild(seq);
-        card.appendChild(head);
-        const meta = document.createElement("div");
-        meta.className = "conversation-message-meta";
-        const metaParts = [String(message?.message_id || "")];
-        if (author.agent_id)
-            metaParts.push(String(author.agent_id));
-        if (message?.reply_to)
-            metaParts.push((runtimeLanguage === "zh-CN" ? "回复 " : "reply to ") + String(message.reply_to));
-        meta.textContent = metaParts.join(" · ");
-        card.appendChild(meta);
-        const body = document.createElement("div");
-        body.className = "conversation-message-body";
-        body.textContent = String(message?.body || "");
-        card.appendChild(body);
-        const deliveries = Array.isArray(message?.deliveries) ? message.deliveries : [];
-        const delivery = document.createElement("div");
-        delivery.className = "conversation-message-deliveries";
-        delivery.textContent = deliveries.length
-            ? (runtimeLanguage === "zh-CN" ? "Agent 收件箱：" : "Agent Inbox: ") + deliveries.map((item) => deliveryAgentLabel(String(item?.recipient_agent_id || "")) + " " + tr(String(item?.state || "unknown"))).join(" · ")
-            : (runtimeLanguage === "zh-CN" ? "没有 Agent 收件箱投递 · 仅保留记录 / 人工房间" : "No Agent Inbox delivery · transcript / Human room only");
-        card.appendChild(delivery);
-        transcript.appendChild(card);
-    }
-    transcript.scrollTop = transcript.scrollHeight;
+    renderConversationMessages(transcript, messages, communicationAgents, {
+        language: runtimeLanguage,
+    });
 }
 function renderCommunicationInbox() {
     const list = el("runtime-inbox-list");
-    clearNode(list);
     const agent = selectedCommunicationAgent();
     const endpointId = communicationEndpointId();
     show("runtime-inbox-consume-all", !!endpointId && communicationInbox.length > 0);
     if (!agent) {
+        clearNode(list);
         setText("runtime-inbox-status", runtimeLanguage === "zh-CN" ? "选择一个 Agent 以查看收件人专属的排队投递。" : "Select an Agent to inspect recipient-specific queued deliveries.");
         return;
     }
     if (!endpointId) {
+        clearNode(list);
         setText("runtime-inbox-status", runtimeLanguage === "zh-CN" ? "将此浏览器附加为端点。离线期间排队投递仍会持久保留。" : "Attach this browser as an Endpoint. Queued deliveries remain durable while offline.");
         return;
     }
@@ -4816,34 +5368,10 @@ function renderCommunicationInbox() {
     setText("runtime-inbox-status", countLabel(totalQueued, "queued delivery")
         + (communicationInbox.length < totalQueued ? (runtimeLanguage === "zh-CN" ? " · 当前显示 " : " · showing ") + String(communicationInbox.length) : "")
         + (runtimeLanguage === "zh-CN" ? " · 读取不会消费投递或唤醒模型" : " · reading does not consume or wake a model"));
-    if (!list)
-        return;
-    for (const item of communicationInbox) {
-        const row = document.createElement("article");
-        row.className = "communication-row inbox-delivery";
-        const head = document.createElement("div");
-        head.className = "communication-row-head";
-        const title = document.createElement("span");
-        title.className = "communication-row-title";
-        title.textContent = String(item?.conversation_title || tr("Untitled Conversation")) + " · #" + String(item?.message?.seq || 0);
-        const consume = document.createElement("button");
-        consume.type = "button";
-        consume.className = "text-button";
-        consume.textContent = tr("Consume");
-        consume.addEventListener("click", () => void consumeCommunicationDeliveries([String(item?.delivery_id || "")]));
-        head.appendChild(title);
-        head.appendChild(consume);
-        row.appendChild(head);
-        const meta = document.createElement("span");
-        meta.className = "communication-row-meta";
-        meta.textContent = String(item?.delivery_id || "") + (runtimeLanguage === "zh-CN" ? " · 来自 " : " · from ") + (item?.message?.author?.participant_kind === "agent" ? deliveryAgentLabel(String(item.message.author.agent_id || "")) : (runtimeLanguage === "zh-CN" ? "人工" : "Human"));
-        row.appendChild(meta);
-        const body = document.createElement("div");
-        body.className = "inbox-message-preview";
-        body.textContent = String(item?.message?.body || "");
-        row.appendChild(body);
-        list.appendChild(row);
-    }
+    renderInboxDeliveryCards(list, communicationInbox, communicationAgents, {
+        language: runtimeLanguage,
+        onConsume: (deliveryId) => void consumeCommunicationDeliveries([deliveryId]),
+    });
 }
 function renderCommunicationSurface() {
     renderCommunicationAvailability();
@@ -5081,22 +5609,23 @@ function refreshCommunication(includeData = true) {
 }
 async function createCommunicationAgent(event) {
     event.preventDefault();
-    const handle = el("runtime-agent-handle")?.value.trim() || "";
-    const displayName = el("runtime-agent-display-name")?.value.trim() || "";
-    const description = el("runtime-agent-description")?.value.trim() || "";
-    const labels = parseAgentIds(el("runtime-agent-labels")?.value || "");
-    if (!handle || !displayName) {
-        setText("runtime-agent-create-status", tr("Handle and display name are required."));
+    const handle = el("runtime-agent-handle")?.value || "";
+    const displayName = el("runtime-agent-display-name")?.value || "";
+    const description = el("runtime-agent-description")?.value || "";
+    const labelsRaw = el("runtime-agent-labels")?.value || "";
+    const validation = validateAgentCreateInputs(handle, displayName, description, labelsRaw);
+    if (!validation.valid) {
+        setText("runtime-agent-create-status", tr(validation.error));
         return;
     }
-    const fingerprint = JSON.stringify({ handle, displayName, description, labels });
-    pendingAgentCreate = idempotencyKeyFor(pendingAgentCreate, fingerprint, "runtime-agent");
+    const { data } = validation;
+    pendingAgentCreate = idempotencyKeyFor(pendingAgentCreate, data.fingerprint, "runtime-agent");
     setText("runtime-agent-create-status", tr("Creating durable Agent…"));
     const response = await api("communication/agent/create", {
-        handle,
-        display_name: displayName,
-        description,
-        specialty_labels: labels,
+        handle: data.handle,
+        display_name: data.displayName,
+        description: data.description,
+        specialty_labels: data.labels,
         idempotency_key: pendingAgentCreate.key,
     });
     if (response?.status === 401) {
@@ -5133,22 +5662,24 @@ async function updateCommunicationAgent(event) {
     const agent = selectedCommunicationAgent();
     if (!agent)
         return;
-    const handle = el("runtime-agent-update-handle")?.value.trim() || "";
-    const displayName = el("runtime-agent-update-display-name")?.value.trim() || "";
-    const description = el("runtime-agent-update-description")?.value.trim() || "";
-    const specialtyLabels = parseAgentIds(el("runtime-agent-update-labels")?.value || "");
-    if (!handle || !displayName) {
-        setText("runtime-agent-update-status", tr("Handle and display name are required."));
+    const handle = el("runtime-agent-update-handle")?.value || "";
+    const displayName = el("runtime-agent-update-display-name")?.value || "";
+    const description = el("runtime-agent-update-description")?.value || "";
+    const labelsRaw = el("runtime-agent-update-labels")?.value || "";
+    const validation = validateAgentUpdateInputs(handle, displayName, description, labelsRaw);
+    if (!validation.valid) {
+        setText("runtime-agent-update-status", tr(validation.error));
         return;
     }
+    const { data } = validation;
     setText("runtime-agent-update-status", tr("Updating Agent Card…"));
     const response = await api("communication/agent/update", {
         agent_id: String(agent.agent_id || ""),
         expected_profile_revision: Number(agent.profile_revision || 0),
-        handle,
-        display_name: displayName,
-        description,
-        specialty_labels: specialtyLabels,
+        handle: data.handle,
+        display_name: data.displayName,
+        description: data.description,
+        specialty_labels: data.specialtyLabels,
     });
     if (response?.status === 401) {
         lock("Credential rejected.");
@@ -5274,19 +5805,19 @@ async function detachCommunicationEndpoint() {
 }
 async function createCommunicationConversation(event) {
     event.preventDefault();
-    const title = el("runtime-conversation-title")?.value.trim() || "";
+    const title = el("runtime-conversation-title")?.value || "";
     const idsInput = el("runtime-conversation-agent-ids")?.value || "";
-    const agentIds = parseAgentIds(idsInput || selectedCommunicationAgentId);
-    if (agentIds.length === 0) {
-        setText("runtime-conversation-create-status", tr("At least one Agent id is required."));
+    const validation = validateConversationCreateInputs(title, idsInput, selectedCommunicationAgentId);
+    if (!validation.valid) {
+        setText("runtime-conversation-create-status", tr(validation.error));
         return;
     }
-    const fingerprint = JSON.stringify({ title, agentIds: [...agentIds].sort() });
-    pendingConversationCreate = idempotencyKeyFor(pendingConversationCreate, fingerprint, "runtime-conversation");
+    const { data } = validation;
+    pendingConversationCreate = idempotencyKeyFor(pendingConversationCreate, data.fingerprint, "runtime-conversation");
     setText("runtime-conversation-create-status", tr("Creating durable Conversation…"));
     const response = await api("communication/conversation/create", {
-        title: title || null,
-        agent_ids: agentIds,
+        title: data.title || null,
+        agent_ids: data.agentIds,
         idempotency_key: pendingConversationCreate.key,
     });
     if (response?.status === 401) {

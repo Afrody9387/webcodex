@@ -22,6 +22,16 @@ const watchedSources = new Set([
   "console.html",
   "runtime.ts",
   "runtime_console_state.ts",
+  "runtime_i18n.ts",
+  "runtime_rich_text.ts",
+  "runtime_api.ts",
+  "runtime_window.ts",
+  "runtime_communication.ts",
+  "runtime_activity.ts",
+  "runtime_storage.ts",
+  "runtime_overview.ts",
+  "runtime_icons.ts",
+  "runtime_operations.ts",
   "runtime.css",
   "runtime.html",
   "admin.ts",
@@ -102,7 +112,7 @@ function minifyCss(source) {
 function stripModuleExports(js) {
   return js
     .replace(/^export\s*\{\};\s*\n?/gm, "")
-    .replace(/^export\s+(function|const|let|class)\b/gm, "$1");
+    .replace(/^export\s+((?:async\s+)?(?:function|const|let|class))\b/gm, "$1");
 }
 
 export function createOutputs(
@@ -142,6 +152,92 @@ export function createOutputs(
     reviewStateClassic + "\n" + workflowSessionStateClassic + "\n" + appScript
   );
   assertClassicScript(resolve(outputDirectory, "app.js"), appInlined);
+  const runtimeI18nModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_i18n.ts")
+  );
+  const runtimeI18nClassic = stripModuleExports(runtimeI18nModule);
+  const runtimeRichTextModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_rich_text.ts")
+  );
+  const runtimeRichTextClassic = stripModuleExports(runtimeRichTextModule);
+  const runtimeApiModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_api.ts")
+  );
+  const runtimeApiClassic = stripModuleExports(runtimeApiModule);
+  const runtimeWindowModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_window.ts")
+  );
+  const runtimeWindowClassic = stripModuleExports(
+    runtimeWindowModule
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_i18n(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_console_state(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+  );
+  const runtimeCommunicationModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_communication.ts")
+  );
+  const runtimeCommunicationClassic = stripModuleExports(
+    runtimeCommunicationModule
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_i18n(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+  );
+  const runtimeActivityModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_activity.ts")
+  );
+  const runtimeActivityClassic = stripModuleExports(
+    runtimeActivityModule
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_i18n(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/workflow_session_state(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+  );
+  const runtimeStorageModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_storage.ts")
+  );
+  const runtimeStorageClassic = stripModuleExports(runtimeStorageModule);
+  const runtimeOverviewModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_overview.ts")
+  );
+  const runtimeOverviewClassic = stripModuleExports(
+    runtimeOverviewModule
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_i18n(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_console_state(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+  );
+  const runtimeOperationsModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_operations.ts")
+  );
+  const runtimeOperationsClassic = stripModuleExports(
+    runtimeOperationsModule
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_i18n(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_communication(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+  );
+  const runtimeIconsModule = buildJs(
+    transpileTypeScript(sourceDirectory, "runtime_icons.ts")
+  );
+  const runtimeIconsClassic = stripModuleExports(runtimeIconsModule);
   const runtimeModule = transpileTypeScript(sourceDirectory, "runtime.ts");
   const runtimeScript = stripModuleExports(
     runtimeModule
@@ -153,9 +249,73 @@ export function createOutputs(
         /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_console_state(?:\.js)?["'];?\s*\n/m,
         ""
       )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_i18n(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_rich_text(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_api(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_window(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_communication(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_activity(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_storage(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_overview(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_icons(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
+      .replace(
+        /^import\s*\{[\s\S]*?\}\s*from\s*["']\.\/runtime_operations(?:\.js)?["'];?\s*\n/m,
+        ""
+      )
   );
   const runtimeInlined = buildJs(
-    workflowSessionStateClassic + "\n" + runtimeConsoleStateClassic + "\n" + runtimeScript
+    workflowSessionStateClassic +
+      "\n" +
+      runtimeConsoleStateClassic +
+      "\n" +
+      runtimeI18nClassic +
+      "\n" +
+      runtimeRichTextClassic +
+      "\n" +
+      runtimeApiClassic +
+      "\n" +
+      runtimeWindowClassic +
+      "\n" +
+      runtimeCommunicationClassic +
+      "\n" +
+      runtimeActivityClassic +
+      "\n" +
+      runtimeStorageClassic +
+      "\n" +
+      runtimeOverviewClassic +
+      "\n" +
+      runtimeOperationsClassic +
+      "\n" +
+      runtimeIconsClassic +
+      "\n" +
+      runtimeScript
   );
   assertClassicScript(resolve(outputDirectory, "runtime.js"), runtimeInlined);
   const adminControllerModule = buildJs(
@@ -210,6 +370,16 @@ export function createOutputs(
     ["review_state.js", reviewStateModule],
     ["workflow_session_state.js", workflowSessionStateModule],
     ["runtime_console_state.js", runtimeConsoleStateModule],
+    ["runtime_i18n.js", runtimeI18nModule],
+    ["runtime_rich_text.js", runtimeRichTextModule],
+    ["runtime_api.js", runtimeApiModule],
+    ["runtime_window.js", runtimeWindowModule],
+    ["runtime_communication.js", runtimeCommunicationModule],
+    ["runtime_activity.js", runtimeActivityModule],
+    ["runtime_storage.js", runtimeStorageModule],
+    ["runtime_overview.js", runtimeOverviewModule],
+    ["runtime_operations.js", runtimeOperationsModule],
+    ["runtime_icons.js", runtimeIconsModule],
     ["admin_controller.js", adminControllerModule],
     ["admin_mutation_controller.js", adminMutationControllerModule],
     ["admin_mutation_view.js", adminMutationViewModule],
