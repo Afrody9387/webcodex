@@ -49,7 +49,72 @@ fn structured_execution_output(
             }
         });
     }
+    if promoted_to_job {
+        instance["output"]["continuation_semantics"] = serde_json::json!({
+            "kind": "observe",
+            "carrier": "observation_token"
+        });
+    }
     instance
+}
+
+#[test]
+fn t2_continuation_output_schemas_distinguish_cursor_kinds_and_carriers() {
+    let specs = registered_tool_specs();
+
+    let read_files = spec_named(&specs, "read_files");
+    let read_full = &read_files.output_schema["properties"]["output"]["anyOf"][0]["anyOf"][0];
+    let range_semantics = &read_full["properties"]["items"]["items"]["properties"]["continuation"]
+        ["properties"]["continuation_semantics"]["properties"];
+    assert_eq!(range_semantics["kind"]["const"], "page");
+    assert_eq!(range_semantics["carrier"]["const"], "position");
+
+    let variants = read_full["properties"]["continuation"]["oneOf"]
+        .as_array()
+        .unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    for variant in variants {
+        let kind = variant["properties"]["kind"]["const"].as_str().unwrap();
+        let semantics = &variant["properties"]["continuation_semantics"]["properties"];
+        seen.insert((
+            kind.to_string(),
+            semantics["kind"]["const"].as_str().unwrap().to_string(),
+            semantics["carrier"]["const"].as_str().unwrap().to_string(),
+        ));
+    }
+    assert!(seen.contains(&(
+        "batch_items".to_string(),
+        "batch".to_string(),
+        "index".to_string()
+    )));
+    assert!(seen.contains(&(
+        "increase_result_budget".to_string(),
+        "refine".to_string(),
+        "none".to_string()
+    )));
+
+    let coding = spec_named(&specs, "coding_agent_observe");
+    let coding_semantics = &coding.output_schema["properties"]["output"]["properties"]
+        ["continuation_semantics"]["properties"];
+    assert_eq!(coding_semantics["kind"]["const"], "observe");
+    assert_eq!(coding_semantics["carrier"]["const"], "observation_token");
+
+    let session = spec_named(&specs, "observe_session_messages");
+    let session_semantics = &session.output_schema["properties"]["output"]["properties"]
+        ["continuation_semantics"]["properties"];
+    assert_eq!(session_semantics["kind"]["const"], "observe");
+    assert_eq!(session_semantics["carrier"]["const"], "observation_token");
+
+    let git = spec_named(&specs, "git_diff_hunks");
+    let recovery = &git.output_schema["properties"]["output"]["properties"]["recovery"];
+    let page_semantics = &recovery["properties"]["continuation"]["properties"]
+        ["continuation_semantics"]["anyOf"][0]["properties"];
+    assert_eq!(page_semantics["kind"]["const"], "page");
+    assert_eq!(page_semantics["carrier"]["const"], "opaque_token");
+    let refine_semantics = &recovery["properties"]["omitted_lines"]["properties"]
+        ["continuation_semantics"]["anyOf"][0]["properties"];
+    assert_eq!(refine_semantics["kind"]["const"], "refine");
+    assert_eq!(refine_semantics["carrier"]["const"], "none");
 }
 
 fn continuation_feedback_subschema(specs: &[ToolSpec], tool: &str) -> Value {
@@ -521,6 +586,10 @@ fn read_continuation_output_schemas_accept_actionable_recovery_shapes() {
                         "safe_cursor": true,
                         "source_sha256": "b".repeat(64),
                         "snapshot_stable": false,
+                        "continuation_semantics": {
+                            "kind": "page",
+                            "carrier": "position"
+                        },
                         "suggested_call": {
                             "tool": "read_files",
                             "arguments": {
@@ -542,6 +611,10 @@ fn read_continuation_output_schemas_accept_actionable_recovery_shapes() {
                     "safe_cursor": true,
                     "next_index": 1,
                     "recommended_order": "after_partial_item",
+                    "continuation_semantics": {
+                        "kind": "batch",
+                        "carrier": "index"
+                    },
                     "suggested_call": {
                         "tool": "read_files",
                         "arguments": {
@@ -579,6 +652,10 @@ fn read_continuation_output_schemas_accept_actionable_recovery_shapes() {
                     "safe_cursor": false,
                     "next_index": 0,
                     "suggested_max_result_bytes": 524288,
+                    "continuation_semantics": {
+                        "kind": "refine",
+                        "carrier": "none"
+                    },
                     "suggested_call": {
                         "tool": "read_files",
                         "arguments": {
@@ -1034,6 +1111,23 @@ fn key_tool_output_schemas_include_expected_fields() {
                     Some("completed"),
                 ),
             ),
+            ("non-promoted execution with continuation semantics", {
+                let mut instance = structured_execution_output(
+                    execution_source,
+                    "completed",
+                    true,
+                    true,
+                    false,
+                    true,
+                    None,
+                    None,
+                );
+                instance["output"]["continuation_semantics"] = serde_json::json!({
+                    "kind": "observe",
+                    "carrier": "observation_token"
+                });
+                instance
+            }),
             (
                 "not_started execution with command_started=true",
                 structured_execution_output(
@@ -1122,6 +1216,15 @@ fn key_tool_output_schemas_include_expected_fields() {
         assert_eq!(
             output_schema_property(&specs, name, "observation_token")["maxLength"],
             webcodex_core::job_observation::MAX_JOB_OBSERVATION_TOKEN_LEN
+        );
+        let continuation_semantics = output_schema_property(&specs, name, "continuation_semantics");
+        assert_eq!(
+            continuation_semantics["properties"]["kind"]["const"], "observe",
+            "{name} continuation kind"
+        );
+        assert_eq!(
+            continuation_semantics["properties"]["carrier"]["const"], "observation_token",
+            "{name} continuation carrier"
         );
         let continuation = output_schema_property(&specs, name, "continuation");
         assert_eq!(continuation["properties"]["tool"]["const"], "observe_jobs");
