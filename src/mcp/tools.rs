@@ -439,25 +439,10 @@ fn add_context_projection_to_output_shape(
                     "type": "integer", "minimum": 0,
                     "description": "Safely recovered Session checkpoint watermark; retain for later ACK."
                 }));
-                properties.insert("session_context_continuation".to_string(), json!({
-                    "type": "object",
-                    "description": "Model-context coherence metadata for session_context_revision. This checkpoint lane is independent from business continuation and failure recovery; ACK grants no authority, resolves no message, and does not gate execution.",
-                    "additionalProperties": false,
-                    "properties": {
-                        "semantics": webcodex_tool_contracts::continuation_semantics_schema(
-                            webcodex_core::runtime_contract::ContinuationKind::Checkpoint,
-                            webcodex_core::runtime_contract::ContinuationCarrier::Revision,
-                            "session_context_revision is a context checkpoint watermark returned through ack_session_context_revision, not an observation cursor.",
-                        ),
-                        "ack_field": {"type": "string", "const": "ack_session_context_revision"}
-                    },
-                    "required": ["semantics", "ack_field"]
-                }));
                 properties.insert("session_continuity".to_string(), json!({
                     "type": "object",
                     "properties": {
-                        "status": {"type": "string", "enum": ["exact", "behind", "unacknowledged", "invalid", "recovered"]},
-                        "recovery_required": {"type": "boolean"},
+                        "status": {"type": "string", "enum": ["exact", "behind", "unacknowledged", "invalid", "recovered"], "description": "Observed Context continuity state only; it is not authority, retry permission, or an action."},
                         "suggested_call": webcodex_tool_contracts::suggested_tool_call_schema(
                             "session_handoff_summary",
                             json!({
@@ -468,7 +453,7 @@ fn add_context_projection_to_output_shape(
                                 "required": ["session_id"],
                                 "additionalProperties": false
                             }),
-                            "Parser-ready advisory recovery call for re-observing bounded Session context. It grants no authority and is not an ACK token."
+                            "Parser-ready advisory recovery call for re-observing bounded Session context. Its presence is the sole machine representation that explicit handoff recovery is actionable; it grants no authority and is not an ACK token."
                         )
                     },
                     "required": ["status"]

@@ -3497,11 +3497,20 @@ async fn session_context_noncapable_kernel_results_still_feed_later_delta() {
         );
         if capable {
             assert_eq!(result.output["session_context_revision"], 2);
+            assert!(result.output.get("session_context_continuation").is_none());
             assert_eq!(result.output["session_continuity"]["status"], "behind");
+            assert!(result.output["session_continuity"]
+                .get("suggested_call")
+                .is_none());
+            assert!(result.output["session_continuity"]
+                .get("recovery_required")
+                .is_none());
             assert_eq!(
                 result.output["session_recovery"]["model_facing_events"][0]["context_revision"],
                 1
             );
+            assert_eq!(result.output["session_recovery"]["omitted_count"], 0);
+            assert_eq!(result.output["session_recovery"]["truncated"], false);
         } else {
             for field in [
                 "session_context_revision",
@@ -3565,12 +3574,15 @@ fn session_context_unknown_ack_is_compact_and_never_certifies_latest() {
         );
         assert_eq!(response.output["state_changed"], true);
         assert!(response.output.get("session_context_revision").is_none());
+        assert!(response
+            .output
+            .get("session_context_continuation")
+            .is_none());
         assert!(response.output.get("session_recovery").is_none());
         assert_eq!(
             response.output["session_continuity"],
             json!({
                 "status": status,
-                "recovery_required": true,
                 "suggested_call": {
                     "tool": "session_handoff_summary",
                     "arguments": {"session_id": session.session_id},
@@ -3583,6 +3595,9 @@ fn session_context_unknown_ack_is_compact_and_never_certifies_latest() {
                 .len()
                 < 384
         );
+        assert!(!serde_json::to_string(&response.output)
+            .unwrap()
+            .contains("recovery_required"));
     }
     assert_eq!(store.context_revision(&session.session_id), Some(3));
 }
@@ -3669,10 +3684,9 @@ fn session_context_incomplete_delta_requires_explicit_recovery() {
         );
         assert_eq!(result.output["session_continuity"]["status"], "behind");
         assert_eq!(result.output["session_continuity"]["events_after_ack"], 25);
-        assert_eq!(
-            result.output["session_continuity"]["recovery_required"],
-            true
-        );
+        assert!(result.output["session_continuity"]
+            .get("recovery_required")
+            .is_none());
         assert!(result.output["session_continuity"]
             .get("recovery_tool")
             .is_none());
@@ -3688,6 +3702,7 @@ fn session_context_incomplete_delta_requires_explicit_recovery() {
         )
         .expect("context recovery suggested_call must parse");
         assert!(result.output.get("session_context_revision").is_none());
+        assert!(result.output.get("session_context_continuation").is_none());
         assert!(result.output["session_recovery"]
             .get("current_handoff")
             .is_none());
@@ -3695,6 +3710,11 @@ fn session_context_incomplete_delta_requires_explicit_recovery() {
             assert_eq!(result.output["session_recovery"]["history_lost"], true);
         } else {
             assert_eq!(result.output["session_recovery"]["truncated"], true);
+        }
+        if mode != "history_lost" {
+            assert!(result.output["session_recovery"]["omitted_count"]
+                .as_u64()
+                .is_some_and(|count| count > 0));
         }
         assert!(
             serde_json::to_vec(&result.output["session_recovery"]["model_facing_events"])
@@ -3715,6 +3735,14 @@ fn session_context_handoff_baseline_fences_concurrent_completions_and_recorder()
     let mut result = super::super::ToolResult::ok(json!({"session_id": session.session_id}));
     establish_handoff_context_baseline(&mut result, &session.session_id, Some(0), Some(0));
     assert_eq!(result.output["session_continuity"]["status"], "recovered");
+    assert_eq!(result.output["session_context_revision"], 0);
+    assert!(result.output.get("session_context_continuation").is_none());
+    assert!(result.output["session_continuity"]
+        .get("suggested_call")
+        .is_none());
+    assert!(result.output["session_continuity"]
+        .get("recovery_required")
+        .is_none());
     record_model_facing_result(
         &store,
         &session.session_id,
