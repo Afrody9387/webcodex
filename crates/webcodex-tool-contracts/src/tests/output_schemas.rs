@@ -1929,13 +1929,127 @@ fn cleanup_and_compatibility_write_output_schemas_do_not_advertise_broad_exfiltr
     }
 }
 
+#[test]
+fn computer_recovery_output_schemas_use_canonical_action_shapes() {
+    let specs = registered_tool_specs();
+    for spec in specs
+        .iter()
+        .filter(|spec| spec.name.starts_with("computer_"))
+    {
+        let props = spec.output_schema["properties"]["output"]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{} output properties", spec.name));
+        assert!(
+            !props.contains_key("recovery_tool"),
+            "{} still declares legacy recovery_tool",
+            spec.name
+        );
+        assert!(
+            props.contains_key("suggested_call"),
+            "{} suggested_call",
+            spec.name
+        );
+        assert!(
+            props.contains_key("reconcile_with"),
+            "{} reconcile_with",
+            spec.name
+        );
+    }
+
+    let suggested = output_schema_property(&specs, "computer_launch_application", "suggested_call");
+    let variants = suggested["oneOf"]
+        .as_array()
+        .expect("Computer suggested_call oneOf");
+    for (tool, required) in [
+        ("computer_list_windows", vec!["client_id"]),
+        ("computer_list_applications", vec!["client_id"]),
+        ("computer_list_displays", vec!["client_id"]),
+        ("computer_snapshot_display", vec!["client_id", "display_id"]),
+        ("read_project_artifact_metadata", vec!["project", "path"]),
+    ] {
+        let variant = variants
+            .iter()
+            .find(|variant| variant["properties"]["tool"]["const"] == tool)
+            .unwrap_or_else(|| panic!("missing Computer recovery target {tool}"));
+        assert_eq!(
+            variant["properties"]["arguments"]["required"],
+            serde_json::json!(required)
+        );
+        assert_eq!(
+            variant["properties"]["arguments"]["additionalProperties"],
+            false
+        );
+    }
+}
+
+#[test]
+fn skill_recovery_output_schema_accepts_canonical_shapes_and_declares_legacy_rejection() {
+    let schema = output_schema_for_tool("skill_install");
+    let actionable = json!({
+        "success": false,
+        "output": {
+            "error_kind": "skill_store_outcome_unknown",
+            "project": "agent:test:demo",
+            "skill_key": "demo",
+            "outcome_unknown": true,
+            "state_changed": null,
+            "recovery_kind": "reconcile",
+            "suggested_call": {
+                "tool": "skill_versions",
+                "arguments": {
+                    "project": "agent:test:demo",
+                    "skill_key": "demo"
+                }
+            },
+            "retry_same_idempotency_key": true
+        },
+        "error": "skill_store_outcome_unknown"
+    });
+    test_support::validate_schema_instance(&actionable, &schema).unwrap();
+
+    let mut family_only = actionable.clone();
+    family_only["output"]
+        .as_object_mut()
+        .unwrap()
+        .remove("suggested_call");
+    family_only["output"]["reconcile_with"] = json!("skill_versions");
+    test_support::validate_schema_instance(&family_only, &schema).unwrap();
+
+    let recovery_constraints = schema["properties"]["output"]["allOf"]
+        .as_array()
+        .expect("Skill recovery constraints");
+    assert!(recovery_constraints
+        .iter()
+        .any(|constraint| constraint["not"]["required"] == json!(["recovery_tool"])));
+    assert!(recovery_constraints.iter().any(|constraint| {
+        constraint["if"]["required"] == json!(["suggested_call"])
+            && constraint["then"]["not"]["required"] == json!(["reconcile_with"])
+    }));
+    assert!(recovery_constraints.iter().any(|constraint| {
+        constraint["if"]["required"] == json!(["reconcile_with"])
+            && constraint["then"]["not"]["required"] == json!(["suggested_call"])
+    }));
+
+    let mut guessed_extra = actionable;
+    guessed_extra["output"]["suggested_call"]["arguments"]["package_revision"] =
+        json!("wc_skillpkg_deadbeef");
+    assert!(test_support::validate_schema_instance(&guessed_extra, &schema).is_err());
+}
+
 fn default_output_schema_field_names() -> BTreeSet<&'static str> {
-    BTreeSet::from([
-        "session_hint",
-        "permission",
-        "recovery_kind",
-        "recovery_tool",
-    ])
+    BTreeSet::from(["session_hint", "permission", "recovery_kind"])
+}
+
+#[test]
+fn model_facing_output_schemas_do_not_publish_retired_recovery_tool() {
+    for spec in registered_tool_specs() {
+        let serialized = serde_json::to_string(&spec.output_schema).unwrap();
+        assert!(
+            !serialized.contains("\"recovery_tool\":"),
+            "{} still declares a retired recovery_tool property",
+            spec.name
+        );
+    }
 }
 
 #[test]

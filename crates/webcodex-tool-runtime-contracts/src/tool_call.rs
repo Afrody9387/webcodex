@@ -2675,12 +2675,6 @@ fn validate_structured_validation_sync_wait(name: &str, arguments: &Value) -> Re
             "invalid arguments for tool '{name}': sync_wait_secs must be at least 1"
         ));
     }
-    if name == "cargo_fmt" && object.get("check").and_then(Value::as_bool) != Some(true) {
-        return Err(
-            "invalid arguments for tool 'cargo_fmt': sync_wait_secs is available only with check=true"
-                .to_string(),
-        );
-    }
     Ok(())
 }
 
@@ -2759,6 +2753,17 @@ impl ToolCall {
             if let Some(object) = arguments.as_object_mut() {
                 if object.get("lib").and_then(Value::as_bool) == Some(false) {
                     object.remove("lib");
+                }
+            }
+        }
+        if name == "cargo_fmt" {
+            if let Some(object) = arguments.as_object_mut() {
+                // Positive sync_wait_secs is a recognized caller-shape hint in
+                // ensure-format mode, but that mode is intentionally synchronous.
+                // Canonicalize the inert hint away before concrete ToolCall serde
+                // so execution/audit truth has one representation: omission.
+                if object.get("check").and_then(Value::as_bool) != Some(true) {
+                    object.remove("sync_wait_secs");
                 }
             }
         }
