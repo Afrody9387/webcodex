@@ -156,6 +156,36 @@ fn show_changes_handoff_arguments_schema() -> Value {
     })
 }
 
+fn show_changes_diff_hunk_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "One bounded diff hunk. source_completeness is the single authoritative statement about whether the returned hunk is proven source-complete.",
+        "additionalProperties": true,
+        "properties": {
+            "source_completeness": {
+                "type": "string",
+                "enum": ["complete", "unknown"],
+                "description": "complete means producer metadata and parsing prove this returned hunk source-complete; unknown means the system cannot prove completeness."
+            }
+        },
+        "required": ["source_completeness"]
+    })
+}
+
+fn show_changes_diff_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "One changed file with bounded diff hunks.",
+        "additionalProperties": true,
+        "properties": {
+            "hunks": {
+                "type": "array",
+                "items": show_changes_diff_hunk_schema()
+            }
+        }
+    })
+}
+
 pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
     match name {
         "git_commit_paths" => Some(wrapped_output_schema(vec![
@@ -574,8 +604,8 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
             (
                 "hunks",
                 array_schema(
-                    open_object_schema("Bounded file diff hunks."),
-                    "Diff hunks.",
+                    show_changes_diff_file_schema(),
+                    "Diff hunks. source_completeness is authoritative for each returned hunk; top-level truncation metadata describes omitted records/content outside that per-hunk proof.",
                 ),
             ),
             (
@@ -593,10 +623,6 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
                     "description": "Present only when bounded show_changes diff hunks are incomplete; identifies the canonical focused/paged review tool without starting it or inventing a continuation.",
                     "additionalProperties": false,
                     "properties": {
-                        "tool": {
-                            "type": "string",
-                            "const": "git_diff_hunks"
-                        },
                         "scope": {
                             "type": "string",
                             "const": "worktree"
@@ -620,7 +646,7 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
                         },
                         "recovery": {
                             "type": "object",
-                            "description": "Structured parser-ready first recovery call plus the truncation class. For line or mixed truncation, continuation is explicitly unsafe for omitted current-hunk lines.",
+                            "description": "Canonical parser-ready first recovery call is the exact tool + arguments pair here; kind and safety fields classify the recovery. For line or mixed truncation, continuation is explicitly unsafe for omitted current-hunk lines.",
                             "additionalProperties": false,
                             "properties": {
                                 "kind": {"type": "string", "enum": ["page", "hunk_lines", "mixed"]},
@@ -629,10 +655,9 @@ pub(super) fn output_schema_for_tool(name: &str) -> Option<Value> {
                                 "safe_continuation_for_omitted_lines": nullable_schema("boolean", "False for hunk-line or mixed truncation; null for page-only truncation.")
                             },
                             "required": ["kind", "tool", "arguments", "safe_continuation_for_omitted_lines"]
-                        },
-                        "suggested_call": show_changes_handoff_arguments_schema()
+                        }
                     },
-                    "required": ["tool", "scope", "reason", "truncation_reasons", "recovery", "suggested_call"]
+                    "required": ["scope", "reason", "truncation_reasons", "recovery"]
                 }),
             ),
             (
