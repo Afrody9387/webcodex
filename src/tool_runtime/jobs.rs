@@ -756,7 +756,6 @@ fn unknown_job_observation_result(job_id: &str) -> ToolResult {
             "suggested_call": list_jobs_recovery_suggested_call(None),
         }),
     )
-    .with_recovery(RecoveryKind::Reobserve)
 }
 
 fn agent_job_log_error_result(job_id: &str, error: String) -> ToolResult {
@@ -809,7 +808,6 @@ fn job_not_found_result(project: &str, job_id: &str) -> ToolResult {
             "suggested_call": list_jobs_recovery_suggested_call(Some(project)),
         }),
     )
-    .with_recovery(RecoveryKind::Reobserve)
 }
 
 fn job_project_mismatch_result(
@@ -2065,7 +2063,7 @@ mod recovery_projection_tests {
 
         let missing = job_not_found_result("agent:special:demo", "job-missing");
         assert_eq!(missing.output["failure_kind"], "job_not_found");
-        assert_eq!(missing.output["recovery_kind"], "reobserve");
+        assert!(missing.output.get("recovery_kind").is_none());
         assert!(missing.output.get("recovery_tool").is_none());
         assert_eq!(
             missing.output["suggested_call"],
