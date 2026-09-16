@@ -1,0 +1,41 @@
+name: Build fixed WebCodex image
+
+on:
+  push:
+    branches:
+      - webcodex-v0.4.1-fixed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/afrody9387/webcodex-server:0.4.1-fixed
+          build-args: |
+            WEBCODEX_GIT_COMMIT=${{ github.sha }}
+            WEBCODEX_GIT_DIRTY=false
+            WEBCODEX_BUILT_AT=${{ github.run_id }}
