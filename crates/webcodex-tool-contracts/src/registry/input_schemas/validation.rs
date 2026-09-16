@@ -221,7 +221,7 @@ pub fn cargo_test_input_schema() -> Value {
         "then": {
             "properties": {
                 "require_tests": { "enum": [false] },
-                "min_tests": { "enum": [] }
+                "min_tests": { "type": "integer", "maximum": 0 }
             }
         }
     }]);
